@@ -1,3 +1,6 @@
+# Force CRLF for Windows batch files
+*.bat text eol=crlf
+
 *.7z filter=lfs diff=lfs merge=lfs -text
 *.arrow filter=lfs diff=lfs merge=lfs -text
 *.bin filter=lfs diff=lfs merge=lfs -text

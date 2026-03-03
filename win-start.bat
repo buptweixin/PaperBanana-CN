@@ -2,19 +2,19 @@
 chcp 65001 >nul 2>&1
 setlocal EnableDelayedExpansion
 
-:: ============================================================
-::  PaperBanana 论文图表助手 - Windows 一键启动脚本
-::  双击此文件即可启动，首次运行自动安装所有依赖
-:: ============================================================
+REM ============================================================
+REM  PaperBanana - Windows Launcher
+REM  Double-click to start. Auto-installs dependencies on first run.
+REM ============================================================
 
-:: --- 配置 ---
+REM --- Config ---
 set "PYTHON_MIN_VER=3.10"
 set "VENV_DIR=.venv"
 set "RUNTIME_DIR=runtime"
 set "PORT=8501"
 set "APP_NAME=PaperBanana 论文图表助手"
 
-:: --- 进入项目目录 ---
+REM --- Enter project directory ---
 cd /d "%~dp0"
 
 echo.
@@ -23,44 +23,44 @@ echo   %APP_NAME%
 echo ==========================================
 echo.
 
-:: ============================================================
-:: Step 1: 查找 / 安装 Python
-:: ============================================================
+REM ============================================================
+REM Step 1: Find / Install Python
+REM ============================================================
 set "PYTHON_CMD="
 
-:: 1a. 检查 runtime\ 便携版 Python
+REM 1a. Check runtime\ portable Python
 if exist "%RUNTIME_DIR%\python\python.exe" (
     call :check_python_ver "%RUNTIME_DIR%\python\python.exe"
     if !errorlevel! == 0 (
         set "PYTHON_CMD=%RUNTIME_DIR%\python\python.exe"
-        echo   [OK] 检测到便携版 Python
+        echo   [OK] Portable Python found
         goto :found_python
     )
 )
 
-:: 1b. 逐个检查系统 Python (避免 for 循环嵌套 errorlevel 问题)
+REM 1b. Check system Python
 call :try_system_python python  && goto :found_python
 call :try_system_python python3 && goto :found_python
 call :try_system_python py      && goto :found_python
 
-:: 1c. 尝试 winget 安装 (Windows 10 1709+)
+REM 1c. Try winget install (Windows 10 1709+)
 where winget >nul 2>&1 || goto :skip_winget
-echo   [..] 使用 winget 安装 Python 3.12 ...
+echo   [..] Installing Python 3.12 via winget ...
 winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements >nul 2>&1 || goto :winget_failed
-:: winget 安装后需要刷新 PATH
+REM Refresh PATH after winget install
 set "PATH=%LOCALAPPDATA%\Programs\Python\Python312;%LOCALAPPDATA%\Programs\Python\Python312\Scripts;%PATH%"
 call :try_system_python python && goto :found_python
 :winget_failed
-echo   [!!] winget 安装未成功，尝试下载便携版 ...
+echo   [!!] winget install failed, trying portable download ...
 :skip_winget
 
-:: 1d. 自动下载便携版 Python (python-build-standalone)
-echo   [..] 未检测到 Python 3.10+，正在自动下载便携版 Python ...
+REM 1d. Auto-download portable Python (python-build-standalone)
+echo   [..] Python 3.10+ not found, downloading portable Python ...
 
 if not exist "%RUNTIME_DIR%" mkdir "%RUNTIME_DIR%"
 
-:: 使用 PowerShell 查询 GitHub API 获取下载地址并下载
-echo   [..] 查询最新版本 ...
+REM Use PowerShell to query GitHub API and download
+echo   [..] Querying latest version ...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "$ProgressPreference = 'SilentlyContinue'; " ^
     "try { " ^
@@ -74,16 +74,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "    }; " ^
     "    if ($url) { break } " ^
     "  }; " ^
-    "  if (-not $url) { Write-Host '  [!!] 未找到下载地址'; exit 1 }; " ^
-    "  Write-Host '  [..] 下载中 (约 40MB，请耐心等待) ...'; " ^
+    "  if (-not $url) { Write-Host '  [!!] Download URL not found'; exit 1 }; " ^
+    "  Write-Host '  [..] Downloading (~40MB, please wait) ...'; " ^
     "  $ProgressPreference = 'Continue'; " ^
     "  Invoke-WebRequest -Uri $url -OutFile '%RUNTIME_DIR%\python.tar.gz' -UseBasicParsing; " ^
-    "  Write-Host '  [..] 解压中 ...'; " ^
+    "  Write-Host '  [..] Extracting ...'; " ^
     "  tar -xzf '%RUNTIME_DIR%\python.tar.gz' -C '%RUNTIME_DIR%\'; " ^
     "  Remove-Item '%RUNTIME_DIR%\python.tar.gz' -Force; " ^
-    "  Write-Host '  [OK] 便携版 Python 已安装'; " ^
+    "  Write-Host '  [OK] Portable Python installed'; " ^
     "} catch { " ^
-    "  Write-Host \"  [!!] 下载失败: $_\"; exit 1 " ^
+    "  Write-Host \"  [!!] Download failed: $_\"; exit 1 " ^
     "}"
 
 if exist "%RUNTIME_DIR%\python\python.exe" (
@@ -91,48 +91,55 @@ if exist "%RUNTIME_DIR%\python\python.exe" (
     goto :found_python
 )
 
-:: 所有方法都失败了
+REM All methods failed
 echo.
-echo   [!!] 无法自动安装 Python，请手动安装:
+echo   [!!] Cannot auto-install Python. Please install manually:
 echo.
-echo       方法 1: Microsoft Store 搜索 "Python 3.12" 安装
-echo       方法 2: 访问 https://www.python.org/downloads/ 下载安装
-echo              安装时请勾选 "Add Python to PATH"
+echo       Option 1: Search "Python 3.12" in Microsoft Store
+echo       Option 2: Download from https://www.python.org/downloads/
+echo                  Check "Add Python to PATH" during installation
 echo.
 pause
 exit /b 1
 
 :found_python
 
-:: ============================================================
-:: Step 2: 创建 / 检查虚拟环境
-:: ============================================================
+REM ============================================================
+REM Step 2: Create / check virtual environment
+REM ============================================================
 if not exist "%VENV_DIR%\Scripts\python.exe" (
-    echo   [..] 创建 Python 虚拟环境 ...
+    echo   [..] Creating Python virtual environment ...
     "%PYTHON_CMD%" -m venv "%VENV_DIR%"
     if !errorlevel! neq 0 (
-        echo   [!!] 虚拟环境创建失败
+        echo   [!!] Failed to create virtual environment
         pause
         exit /b 1
     )
-    echo   [OK] 虚拟环境已创建
+    echo   [OK] Virtual environment created
 ) else (
-    echo   [OK] 虚拟环境已存在
+    echo   [OK] Virtual environment exists
 )
 
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
-set "VENV_PIP=%VENV_DIR%\Scripts\pip.exe"
 
-:: ============================================================
-:: Step 3: 安装 / 更新依赖
-:: ============================================================
-echo   [..] 检查并安装 Python 依赖 (首次较慢) ...
-"%VENV_PIP%" install -r requirements.txt --quiet --disable-pip-version-check 2>nul
-echo   [OK] 依赖已就绪
+REM ============================================================
+REM Step 3: Install / update dependencies
+REM ============================================================
+echo   [..] Installing Python dependencies (first run may be slow) ...
+echo.
+"%VENV_PYTHON%" -m pip install -r requirements.txt --disable-pip-version-check -i https://pypi.tuna.tsinghua.edu.cn/simple
+if !errorlevel! neq 0 (
+    echo.
+    echo   [!!] Failed to install dependencies
+    pause
+    exit /b 1
+)
+echo.
+echo   [OK] Dependencies ready
 
-:: ============================================================
-:: Step 4: 创建数据目录
-:: ============================================================
+REM ============================================================
+REM Step 4: Create data directories
+REM ============================================================
 if not exist "data\PaperBananaBench\diagram" mkdir "data\PaperBananaBench\diagram"
 if not exist "data\PaperBananaBench\plot" mkdir "data\PaperBananaBench\plot"
 if not exist "data\PaperBananaBench\diagram\ref.json" (
@@ -142,30 +149,30 @@ if not exist "data\PaperBananaBench\plot\ref.json" (
     >>"data\PaperBananaBench\plot\ref.json" echo []
 )
 
-:: ============================================================
-:: Step 5: 清理残留端口 & 启动应用
-:: ============================================================
-echo   [..] 检查端口 %PORT% ...
+REM ============================================================
+REM Step 5: Clean up port and launch app
+REM ============================================================
+echo   [..] Checking port %PORT% ...
 for /f "tokens=5" %%A in ('netstat -ano 2^>nul ^| findstr ":%PORT% " ^| findstr "LISTENING"') do (
-    echo   [!!] 端口 %PORT% 被占用 ^(PID: %%A^)，正在清理 ...
+    echo   [!!] Port %PORT% in use ^(PID: %%A^), cleaning up ...
     taskkill /F /PID %%A >nul 2>&1
     timeout /t 1 /nobreak >nul
-    echo   [OK] 端口已释放
+    echo   [OK] Port released
 )
 
 echo.
 echo ==========================================
-echo   启动 %APP_NAME%
-echo   浏览器将自动打开 http://localhost:%PORT%
-echo   关闭此窗口可停止服务
+echo   Starting %APP_NAME%
+echo   Browser will open http://localhost:%PORT%
+echo   Close this window to stop the server
 echo ==========================================
 echo.
 
-:: 延迟打开浏览器
+REM Open browser after delay
 start "" cmd /c "timeout /t 3 /nobreak >nul & start http://localhost:%PORT%"
 
-:: 启动 Streamlit
-"%VENV_DIR%\Scripts\streamlit.exe" run demo.py ^
+REM Launch Streamlit
+"%VENV_PYTHON%" -m streamlit run demo.py ^
     --server.port %PORT% ^
     --server.address 0.0.0.0 ^
     --server.headless true
@@ -173,19 +180,19 @@ start "" cmd /c "timeout /t 3 /nobreak >nul & start http://localhost:%PORT%"
 pause
 exit /b 0
 
-:: ============================================================
-:: 子程序: 检查 Python 版本 >= 3.10
-:: ============================================================
+REM ============================================================
+REM Subroutine: Check Python version >= 3.10
+REM ============================================================
 :check_python_ver
 %~1 -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" 2>nul
 exit /b !errorlevel!
 
-:: ============================================================
-:: 子程序: 尝试系统 Python
-:: ============================================================
+REM ============================================================
+REM Subroutine: Try system Python
+REM ============================================================
 :try_system_python
 where %~1 >nul 2>&1 || exit /b 1
 %~1 -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" 2>nul || exit /b 1
 set "PYTHON_CMD=%~1"
-for /f "delims=" %%V in ('%~1 --version 2^>^&1') do echo   [OK] 检测到系统 %%V
+for /f "delims=" %%V in ('%~1 --version 2^>^&1') do echo   [OK] System %%V found
 exit /b 0
