@@ -250,7 +250,7 @@ async def refine_image_with_nanoviz(image_bytes, edit_prompt, aspect_ratio="21:9
             if generation_utils.evolink_provider is None:
                 return None, "❌ Evolink Provider 未初始化，请在侧边栏填入 API Key。"
 
-            image_model = st.session_state.get("tab1_image_model_name", "nano-banana-2-lite")
+            image_model = st.session_state.get("tab1_image_model_name", "nano-banana-2-beta")
 
             # 步骤 1：上传原始图片到 Evolink 文件服务
             image_b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -509,7 +509,7 @@ def main():
                     "api_key_help": "Evolink API 密钥（Bearer Token）",
                     "api_key_default": get_config_val("evolink", "api_key", "EVOLINK_API_KEY", ""),
                     "model_name": "gemini-2.5-flash",
-                    "image_model_name": "nano-banana-2-lite",
+                    "image_model_name": "nano-banana-2-beta",
                 },
                 "gemini": {
                     "api_key_label": "Google API Key",
