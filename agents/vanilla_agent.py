@@ -115,10 +115,15 @@ class VanillaAgent(BaseAgent):
         content_list = [{"type": "text", "text": prompt_text}]
 
         # 根据 provider 路由 API 调用
-        if self.exp_config.provider == "evolink":
+        active_provider = (
+            self.exp_config.image_provider if cfg["use_image_generation"]
+            else self.exp_config.text_provider
+        )
+        if generation_utils.is_openai_compatible_provider(active_provider):
             if cfg["use_image_generation"]:
                 aspect_ratio = data.get("additional_info", {}).get("rounded_ratio", "1:1")
-                response_list = await generation_utils.call_evolink_image_with_retry_async(
+                response_list = await generation_utils.call_openai_compatible_image_with_retry_async(
+                    provider_name=active_provider,
                     model_name=self.model_name,
                     prompt=prompt_text,
                     config={
@@ -129,13 +134,15 @@ class VanillaAgent(BaseAgent):
                     retry_delay=30,
                 )
             else:
-                response_list = await generation_utils.call_evolink_text_with_retry_async(
+                response_list = await generation_utils.call_openai_compatible_text_with_retry_async(
+                    provider_name=active_provider,
                     model_name=self.model_name,
                     contents=content_list,
                     config={
                         "system_prompt": self.system_prompt,
                         "temperature": self.exp_config.temperature,
                         "max_output_tokens": 50000,
+                        "api_mode": self.exp_config.text_api_mode,
                     },
                     max_attempts=5,
                     retry_delay=30,

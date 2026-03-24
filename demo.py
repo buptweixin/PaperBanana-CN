@@ -44,6 +44,7 @@ try:
     print("调试：已导入所有代理模块")
     from utils import config
     from utils.paperviz_processor import PaperVizProcessor
+    from utils.result_store import dump_results_json, load_results_json
     print("调试：已导入工具模块")
 
     import yaml
@@ -120,23 +121,66 @@ def create_sample_inputs(method_content, caption, diagram_type="Pipeline", aspec
 
     return inputs
 
-async def process_parallel_candidates(data_list, exp_mode="dev_planner_critic", retrieval_setting="auto", model_name="", image_model_name="", provider="evolink", api_key=""):
+
+def _normalize_provider_keys(
+    text_provider: str,
+    image_provider: str,
+    text_api_key: str,
+    image_api_key: str,
+):
+    """统一处理双 provider 场景下的 API Key。"""
+    if text_provider == image_provider:
+        if text_api_key and image_api_key and text_api_key != image_api_key:
+            raise ValueError(
+                f"当前版本暂不支持同一 provider（{text_provider}）配置两套不同 API Key。"
+                "请使用同一个 Key，或改用不同的文本/图像 provider。"
+            )
+        shared_key = text_api_key or image_api_key
+        return shared_key, shared_key
+
+    return text_api_key, image_api_key
+
+
+async def process_parallel_candidates(
+    data_list,
+    exp_mode="dev_planner_critic",
+    retrieval_setting="auto",
+    model_name="",
+    image_model_name="",
+    text_provider="evolink",
+    image_provider="evolink",
+    text_api_mode="chat_completions",
+    text_api_key="",
+    image_api_key="",
+    checkpoint_path=None,
+):
     """使用 PaperVizProcessor 并行处理多个候选方案。"""
     print(f"\n{'='*60}")
     print(f"[DEBUG] process_parallel_candidates 开始")
-    print(f"[DEBUG]   provider={provider}, model={model_name}, image_model={image_model_name}")
+    print(
+        f"[DEBUG]   text_provider={text_provider}, image_provider={image_provider}, "
+        f"model={model_name}, image_model={image_model_name}"
+    )
+    print(f"[DEBUG]   text_api_mode={text_api_mode}")
     print(f"[DEBUG]   exp_mode={exp_mode}, retrieval={retrieval_setting}, candidates={len(data_list)}")
-    print(f"[DEBUG]   api_key={'已设置 (' + api_key[:8] + '...)' if api_key else '未设置'}")
+    print(f"[DEBUG]   text_api_key={'已设置 (' + text_api_key[:8] + '...)' if text_api_key else '未设置'}")
+    print(f"[DEBUG]   image_api_key={'已设置 (' + image_api_key[:8] + '...)' if image_api_key else '未设置'}")
     print(f"{'='*60}")
 
+    text_api_key, image_api_key = _normalize_provider_keys(
+        text_provider=text_provider,
+        image_provider=image_provider,
+        text_api_key=text_api_key,
+        image_api_key=image_api_key,
+    )
+
     # 使用界面传入的 API Key 初始化 Provider
-    if api_key:
-        from utils import generation_utils
-        if provider == "evolink":
-            generation_utils.init_evolink_provider(api_key)
-        elif provider == "gemini":
-            generation_utils.init_gemini_client(api_key)
-    else:
+    from utils import generation_utils
+    if text_api_key:
+        generation_utils.init_provider_client(text_provider, text_api_key)
+    if image_api_key and image_provider != text_provider:
+        generation_utils.init_provider_client(image_provider, image_api_key)
+    if not text_api_key and not image_api_key:
         print(f"[DEBUG] ⚠️ 未提供 API Key，Provider 可能无法正常工作")
 
     # 创建实验配置
@@ -147,10 +191,17 @@ async def process_parallel_candidates(data_list, exp_mode="dev_planner_critic", 
         retrieval_setting=retrieval_setting,
         model_name=model_name,
         image_model_name=image_model_name,
-        provider=provider,
+        provider=text_provider,
+        text_provider=text_provider,
+        image_provider=image_provider,
+        text_api_mode=text_api_mode,
         work_dir=Path(__file__).parent,
     )
-    print(f"[DEBUG] ExpConfig 已创建: provider={exp_config.provider}, model={exp_config.model_name}, image_model={exp_config.image_model_name}")
+    print(
+        f"[DEBUG] ExpConfig 已创建: text_provider={exp_config.text_provider}, "
+        f"image_provider={exp_config.image_provider}, model={exp_config.model_name}, "
+        f"image_model={exp_config.image_model_name}"
+    )
 
     # 初始化处理器及所有代理
     processor = PaperVizProcessor(
@@ -173,25 +224,35 @@ async def process_parallel_candidates(data_list, exp_mode="dev_planner_critic", 
             data_list, max_concurrent=concurrent_num, do_eval=False
         ):
             results.append(result_data)
+            if checkpoint_path:
+                await asyncio.to_thread(dump_results_json, checkpoint_path, results)
     finally:
-        # 关闭 Evolink Provider 的共享 session，避免资源泄漏
-        from utils import generation_utils
-        if generation_utils.evolink_provider and hasattr(generation_utils.evolink_provider, 'close'):
-            await generation_utils.evolink_provider.close()
+        if checkpoint_path and results:
+            await asyncio.to_thread(dump_results_json, checkpoint_path, results)
+        # 关闭 OpenAI 兼容 Provider 的共享 session，避免资源泄漏
+        for provider_name in {text_provider, image_provider}:
+            await generation_utils.close_provider_client(provider_name)
 
     return results
 
-async def refine_image_with_nanoviz(image_bytes, edit_prompt, aspect_ratio="21:9", image_size="2K", api_key="", provider="evolink"):
+async def refine_image_with_nanoviz(
+    image_bytes,
+    edit_prompt,
+    aspect_ratio="21:9",
+    image_size="2K",
+    image_api_key="",
+    image_provider="evolink",
+):
     """
-    使用图像编辑 API 精修图像，支持 Evolink 和 Gemini 两种 Provider。
+    使用图像编辑 API 精修图像，支持 Gemini 和 OpenAI 兼容 Provider。
 
     参数：
         image_bytes: 图像字节数据
         edit_prompt: 描述所需修改的文本
         aspect_ratio: 输出宽高比 (21:9, 16:9, 3:2)
         image_size: 输出分辨率 (2K 或 4K)
-        api_key: API 密钥
-        provider: "evolink" 或 "gemini"
+        image_api_key: 图像 provider 的 API 密钥
+        image_provider: "gemini"、"evolink" 或 "88996"
 
     返回：
         元组 (编辑后的图像字节数据, 成功消息)
@@ -199,10 +260,10 @@ async def refine_image_with_nanoviz(image_bytes, edit_prompt, aspect_ratio="21:9
     try:
         from utils import generation_utils
 
-        if provider == "gemini":
+        if image_provider == "gemini":
             # ====== Gemini 路径：多模态 API，直接传图片字节 ======
-            if api_key:
-                generation_utils.init_gemini_client(api_key)
+            if image_api_key:
+                generation_utils.init_gemini_client(image_api_key)
 
             if generation_utils.gemini_client is None:
                 return None, "❌ Gemini Client 未初始化，请在侧边栏填入 Google API Key。"
@@ -243,27 +304,25 @@ async def refine_image_with_nanoviz(image_bytes, edit_prompt, aspect_ratio="21:9
             return None, "❌ Gemini 未返回图像数据"
 
         else:
-            # ====== Evolink 路径：上传图片获取 URL → image_urls ======
-            if api_key:
-                generation_utils.init_evolink_provider(api_key)
+            # ====== OpenAI 兼容 Provider 路径：内部按 provider 选择上传 URL 或直接 edits ======
+            if image_api_key:
+                generation_utils.init_provider_client(image_provider, image_api_key)
 
-            if generation_utils.evolink_provider is None:
-                return None, "❌ Evolink Provider 未初始化，请在侧边栏填入 API Key。"
+            provider_client = generation_utils.get_openai_compatible_provider(image_provider)
+            if provider_client is None:
+                return None, f"❌ {image_provider} Provider 未初始化，请在侧边栏填入 API Key。"
 
-            image_model = st.session_state.get("tab1_image_model_name", "nano-banana-2-beta")
-
-            # 步骤 1：上传原始图片到 Evolink 文件服务
-            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-            ref_image_url = await generation_utils.upload_image_to_evolink(image_b64, media_type="image/jpeg")
-            print(f"[精修] 参考图已上传: {ref_image_url[:80]}...")
-
-            # 步骤 2：图像生成 API（传入参考图 URL）
-            result = await generation_utils.evolink_provider.generate_image(
+            image_model = st.session_state.get("tab1_image_model_name", "gpt-image-1")
+            result = await generation_utils.edit_openai_compatible_image_with_retry_async(
+                provider_name=image_provider,
                 model_name=image_model,
+                image_bytes=image_bytes,
                 prompt=edit_prompt,
-                aspect_ratio=aspect_ratio,
-                quality=image_size,
-                image_urls=[ref_image_url],
+                config={
+                    "aspect_ratio": aspect_ratio,
+                    "quality": image_size,
+                    "media_type": "image/jpeg",
+                },
                 max_attempts=3,
                 retry_delay=10,
             )
@@ -326,6 +385,11 @@ def get_evolution_stages(result, exp_mode):
 def display_candidate_result(result, candidate_id, exp_mode):
     """展示单个候选方案的结果。"""
     task_name = "diagram"
+
+    if result.get("processing_status") == "failed":
+        error_type = result.get("processing_error_type", "Error")
+        error_msg = result.get("processing_error", "未知错误")
+        st.warning(f"候选方案 {candidate_id} 运行失败：{error_type}: {error_msg}")
 
     # 根据 exp_mode 决定展示哪张图像
     # 对于演示模式，始终尝试查找最后一轮评审结果
@@ -494,12 +558,32 @@ def main():
             )
 
             # Provider 选择
-            provider = st.selectbox(
-                "API Provider",
-                ["gemini", "evolink"],
-                index=0,
-                key="tab1_provider",
-                help="gemini：Google 官方 API（需翻墙）| evolink：国内代理"
+            _default_text_provider = get_config_val("defaults", "text_provider", "TEXT_PROVIDER", "evolink")
+            _default_image_provider = get_config_val("defaults", "image_provider", "IMAGE_PROVIDER", "evolink")
+            _default_text_api_mode = get_config_val("defaults", "text_api_mode", "TEXT_API_MODE", "chat_completions")
+
+            text_provider = st.selectbox(
+                "文本 API Provider",
+                ["gemini", "evolink", "88996", "ggboom"],
+                index=["gemini", "evolink", "88996", "ggboom"].index(_default_text_provider) if _default_text_provider in ["gemini", "evolink", "88996", "ggboom"] else 1,
+                key="tab1_text_provider",
+                help="用于检索、规划、风格化、评审的文本/多模态模型 provider"
+            )
+
+            text_api_mode = st.selectbox(
+                "文本接口",
+                ["chat_completions", "responses"],
+                index=["chat_completions", "responses"].index(_default_text_api_mode) if _default_text_api_mode in ["chat_completions", "responses"] else 0,
+                key="tab1_text_api_mode",
+                help="仅对 OpenAI 兼容文本 provider 生效；Gemini 会忽略此设置"
+            )
+
+            image_provider = st.selectbox(
+                "图像 API Provider",
+                ["gemini", "evolink", "88996"],
+                index=["gemini", "evolink", "88996"].index(_default_image_provider) if _default_image_provider in ["gemini", "evolink", "88996"] else 1,
+                key="tab1_image_provider",
+                help="用于图像生成与图像编辑的 provider"
             )
 
             # Provider 对应的默认配置
@@ -511,6 +595,20 @@ def main():
                     "model_name": "gemini-2.5-flash",
                     "image_model_name": "nano-banana-2-beta",
                 },
+                "88996": {
+                    "api_key_label": "API Key",
+                    "api_key_help": "88996 API 密钥（Bearer Token）",
+                    "api_key_default": get_config_val("api88996", "api_key", "API88996_API_KEY", ""),
+                    "model_name": "gpt-5-mini",
+                    "image_model_name": "gpt-image-1",
+                },
+                "ggboom": {
+                    "api_key_label": "API Key",
+                    "api_key_help": "GGboom API 密钥（Bearer Token）",
+                    "api_key_default": get_config_val("ggboom", "api_key", "GGBOOM_API_KEY", ""),
+                    "model_name": "gpt-5.4",
+                    "image_model_name": "",
+                },
                 "gemini": {
                     "api_key_label": "Google API Key",
                     "api_key_help": "Google AI Studio API 密钥",
@@ -519,32 +617,53 @@ def main():
                     "image_model_name": "gemini-2.0-flash-preview-image-generation",
                 },
             }
-            _pd = _provider_defaults[provider]
+            _text_pd = _provider_defaults[text_provider]
+            _image_pd = _provider_defaults[image_provider]
 
             # 首次加载时设置默认值
-            if "tab1_api_key" not in st.session_state:
-                st.session_state["tab1_api_key"] = _pd["api_key_default"]
+            if "tab1_text_api_key" not in st.session_state:
+                st.session_state["tab1_text_api_key"] = _text_pd["api_key_default"]
+            if "tab1_image_api_key" not in st.session_state:
+                st.session_state["tab1_image_api_key"] = _image_pd["api_key_default"]
             if "tab1_model_name" not in st.session_state:
-                st.session_state["tab1_model_name"] = _pd["model_name"]
+                st.session_state["tab1_model_name"] = _text_pd["model_name"]
             if "tab1_image_model_name" not in st.session_state:
-                st.session_state["tab1_image_model_name"] = _pd["image_model_name"]
+                st.session_state["tab1_image_model_name"] = _image_pd["image_model_name"]
 
-            # 检测 provider 切换，重置模型名称
-            if "prev_provider" not in st.session_state:
-                st.session_state["prev_provider"] = provider
-            if st.session_state["prev_provider"] != provider:
-                st.session_state["prev_provider"] = provider
-                st.session_state["tab1_model_name"] = _pd["model_name"]
-                st.session_state["tab1_image_model_name"] = _pd["image_model_name"]
-                st.session_state["tab1_api_key"] = _pd["api_key_default"]
+            # 检测 provider 切换，分别重置文本/图像模型与 API Key
+            provider_switched = False
+            if "prev_text_provider" not in st.session_state:
+                st.session_state["prev_text_provider"] = text_provider
+            if st.session_state["prev_text_provider"] != text_provider:
+                st.session_state["prev_text_provider"] = text_provider
+                st.session_state["tab1_model_name"] = _text_pd["model_name"]
+                st.session_state["tab1_text_api_key"] = _text_pd["api_key_default"]
+                provider_switched = True
+
+            if "prev_image_provider" not in st.session_state:
+                st.session_state["prev_image_provider"] = image_provider
+            if st.session_state["prev_image_provider"] != image_provider:
+                st.session_state["prev_image_provider"] = image_provider
+                st.session_state["tab1_image_model_name"] = _image_pd["image_model_name"]
+                st.session_state["tab1_image_api_key"] = _image_pd["api_key_default"]
+                provider_switched = True
+
+            if provider_switched:
                 st.rerun()
 
             # API Key
-            api_key = st.text_input(
-                _pd["api_key_label"],
+            text_api_key = st.text_input(
+                f"文本 {_text_pd['api_key_label']}",
                 type="password",
-                key="tab1_api_key",
-                help=_pd["api_key_help"]
+                key="tab1_text_api_key",
+                help=_text_pd["api_key_help"]
+            )
+
+            image_api_key = st.text_input(
+                f"图像 {_image_pd['api_key_label']}",
+                type="password",
+                key="tab1_image_api_key",
+                help=_image_pd["api_key_help"]
             )
 
             # 文本模型
@@ -685,6 +804,10 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                     )
 
                     # 并行处理
+                    results_dir = Path(__file__).parent / "results" / "demo"
+                    results_dir.mkdir(parents=True, exist_ok=True)
+                    json_filename = results_dir / f"demo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
                     try:
                         results = asyncio.run(process_parallel_candidates(
                             input_data_list,
@@ -692,36 +815,34 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                             retrieval_setting=retrieval_setting,
                             model_name=model_name,
                             image_model_name=image_model_name,
-                            provider=provider,
-                            api_key=api_key
+                            text_provider=text_provider,
+                            image_provider=image_provider,
+                            text_api_mode=text_api_mode,
+                            text_api_key=text_api_key,
+                            image_api_key=image_api_key,
+                            checkpoint_path=json_filename,
                         ))
                         st.session_state["results"] = results
                         st.session_state["exp_mode"] = exp_mode
                         timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         st.session_state["timestamp"] = timestamp_str
-
-                        # 将结果保存为 JSON 文件
-                        try:
-                            # 如果结果目录不存在则创建
-                            results_dir = Path(__file__).parent / "results" / "demo"
-                            results_dir.mkdir(parents=True, exist_ok=True)
-
-                            # 生成带时间戳的文件名
-                            json_filename = results_dir / f"demo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-
-                            # 保存为 JSON 并正确处理编码（与 main.py 一致）
-                            with open(json_filename, "w", encoding="utf-8", errors="surrogateescape") as f:
-                                json_string = json.dumps(results, ensure_ascii=False, indent=4)
-                                # 清理无效的 UTF-8 字符
-                                json_string = json_string.encode("utf-8", "ignore").decode("utf-8")
-                                f.write(json_string)
-
-                            st.session_state["json_file"] = str(json_filename)
+                        st.session_state["json_file"] = str(json_filename)
+                        failed_count = sum(1 for item in results if item.get("processing_status") == "failed")
+                        if failed_count > 0:
+                            st.warning(f"⚠️ 已生成 {len(results)} 个候选方案，其中 {failed_count} 个失败；中间结果已保存。")
+                        else:
                             st.success(f"✅ 成功生成 {len(results)} 个候选方案！")
-                            st.info(f"💾 结果已保存至：`{json_filename.name}`")
-                        except Exception as e:
-                            st.warning(f"⚠️ 已生成 {len(results)} 个候选方案，但 JSON 保存失败：{e}")
+                        st.info(f"💾 结果已保存至：`{json_filename.name}`")
                     except Exception as e:
+                        partial_results = load_results_json(json_filename)
+                        if partial_results:
+                            st.session_state["results"] = partial_results
+                            st.session_state["exp_mode"] = exp_mode
+                            st.session_state["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            st.session_state["json_file"] = str(json_filename)
+                            st.warning(
+                                f"⚠️ 处理过程中出错，但已恢复 {len(partial_results)} 个中间结果。"
+                            )
                         st.error(f"处理过程中出错：{e}")
                         import traceback
                         st.code(traceback.format_exc())
@@ -890,8 +1011,8 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                                         edit_prompt=edit_prompt,
                                         aspect_ratio=refine_aspect_ratio,
                                         image_size=refine_resolution,
-                                        api_key=api_key,
-                                        provider=provider,
+                                        image_api_key=image_api_key,
+                                        image_provider=image_provider,
                                     )
                                 )
 

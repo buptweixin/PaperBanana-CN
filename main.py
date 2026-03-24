@@ -20,7 +20,6 @@ import asyncio
 import json
 import argparse
 from pathlib import Path
-import aiofiles
 import numpy as np
 
 from agents.vanilla_agent import VanillaAgent
@@ -32,6 +31,7 @@ from agents.retriever_agent import RetrieverAgent
 from agents.polish_agent import PolishAgent
 
 from utils import config, paperviz_processor
+from utils.result_store import dump_results_json
 
 
 async def main():
@@ -122,25 +122,22 @@ async def main():
 
     async def save_results_and_scores(current_results):
         print(f"Incremental saving results (count: {len(current_results)}) to {output_filename}")
-        async with aiofiles.open(
-            output_filename, "w", encoding="utf-8", errors="surrogateescape"
-        ) as f:
-            json_string = json.dumps(current_results, ensure_ascii=False, indent=4)
-            json_string = json_string.encode("utf-8", "ignore").decode("utf-8")
-            await f.write(json_string)
+        await asyncio.to_thread(dump_results_json, output_filename, current_results)
 
     # Process samples incrementally
     idx = 0
-    async for result_data in processor.process_queries_batch(
-        data_list, max_concurrent=concurrent_num
-    ):
-        all_result_list.append(result_data)
-        idx += 1
-        if idx % 10 == 0:
+    try:
+        async for result_data in processor.process_queries_batch(
+            data_list, max_concurrent=concurrent_num
+        ):
+            all_result_list.append(result_data)
+            idx += 1
+            if idx % 10 == 0:
+                await save_results_and_scores(all_result_list)
+    finally:
+        if all_result_list:
             await save_results_and_scores(all_result_list)
 
-    # Final save
-    await save_results_and_scores(all_result_list)
     print("Processing completed.")
 
 

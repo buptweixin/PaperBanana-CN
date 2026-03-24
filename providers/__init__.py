@@ -3,7 +3,9 @@ Provider 包 - 管理不同 API 提供商的接口
 """
 
 from .base import BaseProvider
+from .api88996 import Api88996Provider
 from .evolink import EvolinkProvider
+from .ggboom import GgboomProvider
 
 
 def create_provider(provider_name: str, **kwargs) -> BaseProvider:
@@ -18,7 +20,9 @@ def create_provider(provider_name: str, **kwargs) -> BaseProvider:
         BaseProvider 实例
     """
     providers = {
+        "88996": Api88996Provider,
         "evolink": EvolinkProvider,
+        "ggboom": GgboomProvider,
     }
 
     if provider_name not in providers:

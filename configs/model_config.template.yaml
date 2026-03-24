@@ -16,6 +16,9 @@
 
 # Default Models
 defaults:
+  text_provider: "evolink" # gemini / evolink / 88996 / ggboom
+  image_provider: "evolink" # gemini / evolink / 88996
+  text_api_mode: "chat_completions" # chat_completions / responses
   model_name: "" # e.g., "gemini-3-pro-preview"
   image_model_name: "" # e.g., "gemini-3-pro-image-preview"
   
@@ -24,3 +27,16 @@ api_keys:
   google_api_key: ""
   openai_api_key: ""
   anthropic_api_key: ""
+
+# OpenAI 兼容 Provider（可选）
+evolink:
+  api_key: ""
+  base_url: "https://api.evolink.ai"
+
+api88996:
+  api_key: ""
+  base_url: "https://88996.cloud"
+
+ggboom:
+  api_key: ""
+  base_url: "https://ai.qaq.al"

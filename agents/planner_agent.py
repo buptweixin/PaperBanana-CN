@@ -50,7 +50,10 @@ class PlannerAgent(BaseAgent):
 
     async def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
         cfg = self.task_config
-        print(f"[DEBUG] [PlannerAgent] 开始处理, task={cfg['task_name']}, provider={self.exp_config.provider}, model={self.model_name}")
+        print(
+            f"[DEBUG] [PlannerAgent] 开始处理, task={cfg['task_name']}, "
+            f"text_provider={self.exp_config.text_provider}, model={self.model_name}"
+        )
 
         raw_content = data["content"]
         content = json.dumps(raw_content) if isinstance(raw_content, (dict, list)) else raw_content
@@ -97,14 +100,16 @@ class PlannerAgent(BaseAgent):
         print(f"[DEBUG] [PlannerAgent] content_list 长度={len(content_list)}, 示例数={len(examples)}")
 
         # 根据 provider 路由 API 调用
-        if self.exp_config.provider == "evolink":
-            response_list = await generation_utils.call_evolink_text_with_retry_async(
+        if generation_utils.is_openai_compatible_provider(self.exp_config.text_provider):
+            response_list = await generation_utils.call_openai_compatible_text_with_retry_async(
+                provider_name=self.exp_config.text_provider,
                 model_name=self.model_name,
                 contents=content_list,
                 config={
                     "system_prompt": self.system_prompt,
                     "temperature": self.exp_config.temperature,
                     "max_output_tokens": 50000,
+                    "api_mode": self.exp_config.text_api_mode,
                 },
                 max_attempts=5,
                 retry_delay=5,

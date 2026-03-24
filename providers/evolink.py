@@ -141,6 +141,74 @@ class EvolinkProvider(BaseProvider):
             "max_tokens": max_output_tokens,
         }
 
+    def _build_responses_input(
+        self,
+        contents: List[Dict[str, Any]],
+        system_prompt: str = "",
+    ) -> List[Dict[str, Any]]:
+        """构建 OpenAI Responses API 的 input。"""
+        response_input = []
+
+        if system_prompt:
+            response_input.append({
+                "role": "system",
+                "content": [{"type": "input_text", "text": system_prompt}],
+            })
+
+        user_parts = []
+        for item in contents:
+            item_type = item.get("type", "")
+            if item_type == "text":
+                user_parts.append({"type": "input_text", "text": item["text"]})
+            elif item_type == "image":
+                source = item.get("source", {})
+                if source.get("type") == "base64":
+                    media_type = source.get("media_type", "image/jpeg")
+                    data = source.get("data", "")
+                    user_parts.append({
+                        "type": "input_image",
+                        "image_url": f"data:{media_type};base64,{data}",
+                    })
+                elif "image_base64" in item:
+                    user_parts.append({
+                        "type": "input_image",
+                        "image_url": f"data:image/jpeg;base64,{item['image_base64']}",
+                    })
+
+        response_input.append({"role": "user", "content": user_parts})
+        return response_input
+
+    def _build_responses_payload(
+        self,
+        model_name: str,
+        contents: List[Dict[str, Any]],
+        system_prompt: str,
+        temperature: float,
+        max_output_tokens: int,
+    ) -> Dict[str, Any]:
+        """构建 Responses API 请求体。"""
+        return {
+            "model": model_name,
+            "input": self._build_responses_input(contents, system_prompt),
+            "temperature": temperature,
+            "max_output_tokens": max_output_tokens,
+        }
+
+    def _extract_text_from_responses(self, response: Dict[str, Any]) -> str:
+        """从 Responses API 响应中提取文本。"""
+        output_text = response.get("output_text", "")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text
+
+        text_parts = []
+        for output_item in response.get("output", []):
+            for content_item in output_item.get("content", []):
+                text = content_item.get("text", "")
+                if text:
+                    text_parts.append(text)
+
+        return "\n".join(text_parts).strip()
+
     def _build_image_payload(
         self,
         model_name: str,
@@ -260,28 +328,39 @@ class EvolinkProvider(BaseProvider):
         system_prompt: str = "",
         temperature: float = 1.0,
         max_output_tokens: int = 50000,
+        api_mode: str = "chat_completions",
         max_attempts: int = 3,
         retry_delay: float = 5,
         error_context: str = "",
     ) -> List[str]:
         """
-        通过 /v1/chat/completions 生成文本
+        通过 /v1/chat/completions 或 /v1/responses 生成文本
 
         兼容 OpenAI Chat Completions API 格式
         """
-        url = f"{self.base_url}/v1/chat/completions"
-        payload = self._build_text_payload(
-            model_name=model_name,
-            contents=contents,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-        )
+        if api_mode == "responses":
+            url = f"{self.base_url}/v1/responses"
+            payload = self._build_responses_payload(
+                model_name=model_name,
+                contents=contents,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            )
+        else:
+            url = f"{self.base_url}/v1/chat/completions"
+            payload = self._build_text_payload(
+                model_name=model_name,
+                contents=contents,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            )
 
         # 计算内容摘要
         content_types = [item.get("type", "?") for item in contents]
         sys_len = len(system_prompt) if system_prompt else 0
-        print(f"[DEBUG] [Evolink 文本] 请求: model={model_name}, temp={temperature}, max_tokens={max_output_tokens}")
+        print(f"[DEBUG] [Evolink 文本] 请求: mode={api_mode}, model={model_name}, temp={temperature}, max_tokens={max_output_tokens}")
         print(f"[DEBUG] [Evolink 文本]   内容: {content_types}, system_prompt 长度={sys_len}")
 
         for attempt in range(max_attempts):
@@ -289,13 +368,18 @@ class EvolinkProvider(BaseProvider):
                 response = await self._post_json(url, payload)
 
                 # 提取文本响应
-                choices = response.get("choices", [])
-                if choices:
-                    text = choices[0].get("message", {}).get("content", "")
-                    if text.strip():
-                        usage = response.get("usage", {})
-                        print(f"[DEBUG] [Evolink 文本] ✓ 成功, 响应长度={len(text)}, usage={usage}")
-                        return [text]
+                text = ""
+                if api_mode == "responses":
+                    text = self._extract_text_from_responses(response)
+                else:
+                    choices = response.get("choices", [])
+                    if choices:
+                        text = choices[0].get("message", {}).get("content", "")
+
+                if text.strip():
+                    usage = response.get("usage", {})
+                    print(f"[DEBUG] [Evolink 文本] ✓ 成功, 响应长度={len(text)}, usage={usage}")
+                    return [text]
 
                 print(f"[Evolink 文本] 响应为空，{retry_delay}s 后重试...")
                 if attempt < max_attempts - 1:

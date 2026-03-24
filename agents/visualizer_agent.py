@@ -94,7 +94,14 @@ class VisualizerAgent(BaseAgent):
     async def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
         cfg = self.task_config
         task_name = cfg["task_name"]
-        print(f"[DEBUG] [VisualizerAgent] 开始处理, task={task_name}, provider={self.exp_config.provider}, model={self.model_name}, 图像生成={cfg['use_image_generation']}")
+        active_provider = (
+            self.exp_config.image_provider if cfg["use_image_generation"]
+            else self.exp_config.text_provider
+        )
+        print(
+            f"[DEBUG] [VisualizerAgent] 开始处理, task={task_name}, "
+            f"provider={active_provider}, model={self.model_name}, 图像生成={cfg['use_image_generation']}"
+        )
 
         desc_keys_to_process = []
         for key in [
@@ -130,14 +137,14 @@ class VisualizerAgent(BaseAgent):
             print(f"[DEBUG] [VisualizerAgent] 处理 {desc_key}, prompt 长度={len(prompt_text)}")
 
             # 根据 provider 路由 API 调用
-            if self.exp_config.provider == "evolink":
+            if generation_utils.is_openai_compatible_provider(active_provider):
                 if cfg["use_image_generation"]:
-                    # Evolink 图像生成（异步任务模式）
                     aspect_ratio = "1:1"
                     if "additional_info" in data and "rounded_ratio" in data["additional_info"]:
                         aspect_ratio = data["additional_info"]["rounded_ratio"]
 
-                    response_list = await generation_utils.call_evolink_image_with_retry_async(
+                    response_list = await generation_utils.call_openai_compatible_image_with_retry_async(
+                        provider_name=active_provider,
                         model_name=self.model_name,
                         prompt=prompt_text,
                         config={
@@ -148,14 +155,15 @@ class VisualizerAgent(BaseAgent):
                         retry_delay=30,
                     )
                 else:
-                    # Evolink 文本生成（用于代码生成）
-                    response_list = await generation_utils.call_evolink_text_with_retry_async(
+                    response_list = await generation_utils.call_openai_compatible_text_with_retry_async(
+                        provider_name=active_provider,
                         model_name=self.exp_config.model_name,
                         contents=content_list,
                         config={
                             "system_prompt": self.system_prompt,
                             "temperature": self.exp_config.temperature,
                             "max_output_tokens": cfg["max_output_tokens"],
+                            "api_mode": self.exp_config.text_api_mode,
                         },
                         max_attempts=5,
                         retry_delay=30,

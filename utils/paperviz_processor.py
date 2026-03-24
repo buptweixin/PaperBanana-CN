@@ -17,6 +17,7 @@ Processing pipeline of PaperVizAgent
 """
 
 import asyncio
+import traceback
 from typing import List, Dict, Any, AsyncGenerator
 
 import numpy as np
@@ -110,7 +111,10 @@ class PaperVizProcessor:
         task_name = self.exp_config.task_name.lower()
         retrieval_setting = self.exp_config.retrieval_setting
         print(f"\n[DEBUG] ── process_single_query 开始 ── candidate={candidate_id}")
-        print(f"[DEBUG]   exp_mode={exp_mode}, task={task_name}, retrieval={retrieval_setting}, provider={self.exp_config.provider}")
+        print(
+            f"[DEBUG]   exp_mode={exp_mode}, task={task_name}, retrieval={retrieval_setting}, "
+            f"text_provider={self.exp_config.text_provider}, image_provider={self.exp_config.image_provider}"
+        )
 
         if exp_mode == "vanilla":
             print(f"[DEBUG] [{candidate_id}] 流水线: vanilla_agent")
@@ -200,9 +204,26 @@ class PaperVizProcessor:
         Batch process queries with concurrency support
         """
         semaphore = asyncio.Semaphore(max_concurrent)
+
         async def process_with_semaphore(doc):
             async with semaphore:
-                return await self.process_single_query(doc, do_eval=do_eval)
+                try:
+                    result = await self.process_single_query(doc, do_eval=do_eval)
+                    result["processing_status"] = "success"
+                    return result
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    failed_result = dict(doc)
+                    failed_result["processing_status"] = "failed"
+                    failed_result["processing_error"] = str(e)
+                    failed_result["processing_error_type"] = type(e).__name__
+                    failed_result["processing_traceback"] = traceback.format_exc()
+                    print(
+                        f"[ERROR] [PaperVizProcessor] candidate={doc.get('candidate_id', 'N/A')} "
+                        f"处理失败: {type(e).__name__}: {e}"
+                    )
+                    return failed_result
 
         # Create all tasks
         tasks = []
@@ -253,4 +274,3 @@ class PaperVizProcessor:
             data, task_name=exp_config.task_name, work_dir=exp_config.work_dir
         )
         return data
-

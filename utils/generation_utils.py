@@ -44,12 +44,18 @@ def get_config_val(section, key, env_var, default=""):
         val = model_config[section].get(key)
     return val or default
 
-# ==================== Evolink Provider 初始化 ====================
+# ==================== OpenAI 兼容 Provider 初始化 ====================
 
 evolink_provider = None
+api88996_provider = None
+ggboom_provider = None
 
 evolink_api_key = get_config_val("evolink", "api_key", "EVOLINK_API_KEY", "")
 evolink_base_url = get_config_val("evolink", "base_url", "EVOLINK_BASE_URL", "https://api.evolink.ai")
+api88996_api_key = get_config_val("api88996", "api_key", "API88996_API_KEY", "")
+api88996_base_url = get_config_val("api88996", "base_url", "API88996_BASE_URL", "https://88996.cloud")
+ggboom_api_key = get_config_val("ggboom", "api_key", "GGBOOM_API_KEY", "")
+ggboom_base_url = get_config_val("ggboom", "base_url", "GGBOOM_BASE_URL", "https://ai.qaq.al")
 
 if evolink_api_key:
     from providers.evolink import EvolinkProvider
@@ -57,6 +63,20 @@ if evolink_api_key:
     print(f"已初始化 Evolink Provider (base_url={evolink_base_url})")
 else:
     print("警告：未配置 Evolink API Key，Evolink Provider 不可用。")
+
+if api88996_api_key:
+    from providers.api88996 import Api88996Provider
+    api88996_provider = Api88996Provider(api_key=api88996_api_key, base_url=api88996_base_url)
+    print(f"已初始化 88996 Provider (base_url={api88996_base_url})")
+else:
+    print("警告：未配置 88996 API Key，88996 Provider 不可用。")
+
+if ggboom_api_key:
+    from providers.ggboom import GgboomProvider
+    ggboom_provider = GgboomProvider(api_key=ggboom_api_key, base_url=ggboom_base_url)
+    print(f"已初始化 GGboom Provider (base_url={ggboom_base_url})")
+else:
+    print("警告：未配置 GGboom API Key，GGboom Provider 不可用。")
 
 
 def init_evolink_provider(api_key: str, base_url: str = ""):
@@ -68,6 +88,65 @@ def init_evolink_provider(api_key: str, base_url: str = ""):
     from providers.evolink import EvolinkProvider
     evolink_provider = EvolinkProvider(api_key=api_key, base_url=url)
     print(f"已通过界面初始化 Evolink Provider (base_url={url})")
+
+
+def init_api88996_provider(api_key: str, base_url: str = ""):
+    """用指定的 API Key 初始化或更新 88996 Provider（供界面动态传入）。"""
+    global api88996_provider
+    if not api_key:
+        return
+    url = base_url or api88996_base_url
+    from providers.api88996 import Api88996Provider
+    api88996_provider = Api88996Provider(api_key=api_key, base_url=url)
+    print(f"已通过界面初始化 88996 Provider (base_url={url})")
+
+
+def init_ggboom_provider(api_key: str, base_url: str = ""):
+    """用指定的 API Key 初始化或更新 GGboom Provider（供界面动态传入）。"""
+    global ggboom_provider
+    if not api_key:
+        return
+    url = base_url or ggboom_base_url
+    from providers.ggboom import GgboomProvider
+    ggboom_provider = GgboomProvider(api_key=api_key, base_url=url)
+    print(f"已通过界面初始化 GGboom Provider (base_url={url})")
+
+
+def init_provider_client(provider_name: str, api_key: str, base_url: str = ""):
+    """根据 provider 名称初始化对应客户端。"""
+    if not api_key:
+        return
+    if provider_name == "evolink":
+        init_evolink_provider(api_key, base_url)
+    elif provider_name == "88996":
+        init_api88996_provider(api_key, base_url)
+    elif provider_name == "ggboom":
+        init_ggboom_provider(api_key, base_url)
+    elif provider_name == "gemini":
+        init_gemini_client(api_key)
+
+
+def is_openai_compatible_provider(provider_name: str) -> bool:
+    """判断是否为项目内的 OpenAI 兼容 Provider。"""
+    return provider_name in {"evolink", "88996", "ggboom"}
+
+
+def get_openai_compatible_provider(provider_name: str):
+    """获取已初始化的 OpenAI 兼容 Provider 实例。"""
+    if provider_name == "evolink":
+        return evolink_provider
+    if provider_name == "88996":
+        return api88996_provider
+    if provider_name == "ggboom":
+        return ggboom_provider
+    return None
+
+
+async def close_provider_client(provider_name: str):
+    """关闭指定 provider 的共享连接。"""
+    provider = get_openai_compatible_provider(provider_name)
+    if provider and hasattr(provider, "close"):
+        await provider.close()
 
 
 def init_gemini_client(api_key: str):
@@ -118,49 +197,165 @@ if openai_api_key:
         print("警告：未安装 openai，OpenAI Client 不可用。")
 
 
-# ==================== Evolink 调用函数 ====================
+# ==================== OpenAI 兼容 Provider 调用函数 ====================
+
+def _extract_openai_compatible_text_config(config):
+    """统一提取 OpenAI 兼容 provider 的文本配置。"""
+    if hasattr(config, 'system_instruction'):
+        return {
+            "system_prompt": config.system_instruction or "",
+            "temperature": config.temperature,
+            "max_output_tokens": config.max_output_tokens,
+            "api_mode": "chat_completions",
+        }
+    if isinstance(config, dict):
+        return {
+            "system_prompt": config.get("system_prompt", ""),
+            "temperature": config.get("temperature", 1.0),
+            "max_output_tokens": config.get("max_output_tokens", 50000),
+            "api_mode": config.get("api_mode", "chat_completions"),
+        }
+    return {
+        "system_prompt": "",
+        "temperature": 1.0,
+        "max_output_tokens": 50000,
+        "api_mode": "chat_completions",
+    }
+
+
+async def call_openai_compatible_text_with_retry_async(
+    provider_name,
+    model_name,
+    contents,
+    config,
+    max_attempts=5,
+    retry_delay=5,
+    error_context="",
+):
+    """通过项目内 OpenAI 兼容 Provider 进行文本生成。"""
+    provider = get_openai_compatible_provider(provider_name)
+    print(f"[DEBUG] call_openai_compatible_text: provider={provider_name}, model={model_name}, 已初始化={provider is not None}")
+    if provider is None:
+        raise RuntimeError(f"{provider_name} Provider 未初始化，请检查 API Key 配置。")
+
+    text_config = _extract_openai_compatible_text_config(config)
+    return await provider.generate_text(
+        model_name=model_name,
+        contents=contents,
+        system_prompt=text_config["system_prompt"],
+        temperature=text_config["temperature"],
+        max_output_tokens=text_config["max_output_tokens"],
+        api_mode=text_config["api_mode"],
+        max_attempts=max_attempts,
+        retry_delay=retry_delay,
+        error_context=error_context,
+    )
+
+
+async def call_openai_compatible_image_with_retry_async(
+    provider_name,
+    model_name,
+    prompt,
+    config,
+    max_attempts=5,
+    retry_delay=30,
+    error_context="",
+):
+    """通过项目内 OpenAI 兼容 Provider 进行图像生成。"""
+    provider = get_openai_compatible_provider(provider_name)
+    print(f"[DEBUG] call_openai_compatible_image: provider={provider_name}, model={model_name}, config={config}, 已初始化={provider is not None}")
+    if provider is None:
+        raise RuntimeError(f"{provider_name} Provider 未初始化，请检查 API Key 配置。")
+
+    aspect_ratio = config.get("aspect_ratio", "16:9")
+    quality = config.get("quality", "2K")
+    image_urls = config.get("image_urls", None)
+
+    return await provider.generate_image(
+        model_name=model_name,
+        prompt=prompt,
+        aspect_ratio=aspect_ratio,
+        quality=quality,
+        image_urls=image_urls,
+        max_attempts=max_attempts,
+        retry_delay=retry_delay,
+        error_context=error_context,
+    )
+
+
+async def edit_openai_compatible_image_with_retry_async(
+    provider_name,
+    model_name,
+    image_bytes,
+    prompt,
+    config,
+    max_attempts=5,
+    retry_delay=30,
+    error_context="",
+):
+    """统一封装 image-to-image 能力，屏蔽各 provider 的差异。"""
+    if provider_name == "evolink":
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        ref_image_url = await upload_image_to_evolink(
+            image_b64,
+            media_type=config.get("media_type", "image/jpeg"),
+        )
+        return await call_openai_compatible_image_with_retry_async(
+            provider_name="evolink",
+            model_name=model_name,
+            prompt=prompt,
+            config={
+                "aspect_ratio": config.get("aspect_ratio", "16:9"),
+                "quality": config.get("quality", "2K"),
+                "image_urls": [ref_image_url],
+            },
+            max_attempts=max_attempts,
+            retry_delay=retry_delay,
+            error_context=error_context,
+        )
+
+    if provider_name == "88996":
+        provider = get_openai_compatible_provider(provider_name)
+        if provider is None:
+            raise RuntimeError("88996 Provider 未初始化，请检查 API Key 配置。")
+        return await provider.edit_image(
+            model_name=model_name,
+            image_bytes=image_bytes,
+            prompt=prompt,
+            aspect_ratio=config.get("aspect_ratio", "16:9"),
+            quality=config.get("quality", "2K"),
+            max_attempts=max_attempts,
+            retry_delay=retry_delay,
+            error_context=error_context,
+            media_type=config.get("media_type", "image/jpeg"),
+        )
+
+    raise ValueError(f"不支持的 OpenAI 兼容 Provider: {provider_name}")
 
 async def call_evolink_text_with_retry_async(
     model_name, contents, config, max_attempts=5, retry_delay=5, error_context=""
 ):
-    """
-    通过 Evolink Provider 进行文本生成。
-
-    Args:
-        model_name: 模型名称（如 "gemini-2.5-flash"）
-        contents: 通用内容列表
-        config: 配置字典或对象，需包含 system_instruction, temperature, max_output_tokens
-        max_attempts: 最大重试次数
-        retry_delay: 重试间隔
-        error_context: 错误上下文
-    """
-    print(f"[DEBUG] call_evolink_text: model={model_name}, provider={'已初始化' if evolink_provider else '未初始化'}")
-    if evolink_provider is None:
-        raise RuntimeError("Evolink Provider 未初始化，请检查 EVOLINK_API_KEY 配置。")
-
-    # 从 config 中提取参数（兼容 types.GenerateContentConfig 和 dict）
-    if hasattr(config, 'system_instruction'):
-        system_prompt = config.system_instruction or ""
-        temperature = config.temperature
-        max_output_tokens = config.max_output_tokens
-        print(f"[DEBUG] call_evolink_text: 从 GenerateContentConfig 提取参数")
-    elif isinstance(config, dict):
-        system_prompt = config.get("system_prompt", "")
-        temperature = config.get("temperature", 1.0)
-        max_output_tokens = config.get("max_output_tokens", 50000)
-        print(f"[DEBUG] call_evolink_text: 从 dict 提取参数")
-    else:
-        system_prompt = ""
-        temperature = 1.0
-        max_output_tokens = 50000
-        print(f"[DEBUG] call_evolink_text: 使用默认参数, config type={type(config)}")
-
-    return await evolink_provider.generate_text(
+    """通过 Evolink Provider 进行文本生成。"""
+    return await call_openai_compatible_text_with_retry_async(
+        provider_name="evolink",
         model_name=model_name,
         contents=contents,
-        system_prompt=system_prompt,
-        temperature=temperature,
-        max_output_tokens=max_output_tokens,
+        config=config,
+        max_attempts=max_attempts,
+        retry_delay=retry_delay,
+        error_context=error_context,
+    )
+
+
+async def call_api88996_text_with_retry_async(
+    model_name, contents, config, max_attempts=5, retry_delay=5, error_context=""
+):
+    """通过 88996 Provider 进行文本生成。"""
+    return await call_openai_compatible_text_with_retry_async(
+        provider_name="88996",
+        model_name=model_name,
+        contents=contents,
+        config=config,
         max_attempts=max_attempts,
         retry_delay=retry_delay,
         error_context=error_context,
@@ -185,31 +380,43 @@ async def upload_image_to_evolink(image_b64: str, media_type: str = "image/jpeg"
 async def call_evolink_image_with_retry_async(
     model_name, prompt, config, max_attempts=5, retry_delay=30, error_context=""
 ):
-    """
-    通过 Evolink Provider 进行图像生成。
-
-    Args:
-        model_name: 图像模型名称（如 "nano-banana-2-lite"，通过 /v1/images/generations）
-        prompt: 图像描述提示词
-        config: 配置字典，需包含 aspect_ratio, quality 等
-        max_attempts: 最大重试次数
-        retry_delay: 重试间隔
-        error_context: 错误上下文
-    """
-    print(f"[DEBUG] call_evolink_image: model={model_name}, config={config}, provider={'已初始化' if evolink_provider else '未初始化'}")
-    if evolink_provider is None:
-        raise RuntimeError("Evolink Provider 未初始化，请检查 EVOLINK_API_KEY 配置。")
-
-    aspect_ratio = config.get("aspect_ratio", "16:9")
-    quality = config.get("quality", "2K")
-    image_urls = config.get("image_urls", None)
-
-    return await evolink_provider.generate_image(
+    """通过 Evolink Provider 进行图像生成。"""
+    return await call_openai_compatible_image_with_retry_async(
+        provider_name="evolink",
         model_name=model_name,
         prompt=prompt,
-        aspect_ratio=aspect_ratio,
-        quality=quality,
-        image_urls=image_urls,
+        config=config,
+        max_attempts=max_attempts,
+        retry_delay=retry_delay,
+        error_context=error_context,
+    )
+
+
+async def call_api88996_image_with_retry_async(
+    model_name, prompt, config, max_attempts=5, retry_delay=30, error_context=""
+):
+    """通过 88996 Provider 进行图像生成。"""
+    return await call_openai_compatible_image_with_retry_async(
+        provider_name="88996",
+        model_name=model_name,
+        prompt=prompt,
+        config=config,
+        max_attempts=max_attempts,
+        retry_delay=retry_delay,
+        error_context=error_context,
+    )
+
+
+async def edit_api88996_image_with_retry_async(
+    model_name, image_bytes, prompt, config, max_attempts=5, retry_delay=30, error_context=""
+):
+    """通过 88996 Provider 进行图片编辑。"""
+    return await edit_openai_compatible_image_with_retry_async(
+        provider_name="88996",
+        model_name=model_name,
+        image_bytes=image_bytes,
+        prompt=prompt,
+        config=config,
         max_attempts=max_attempts,
         retry_delay=retry_delay,
         error_context=error_context,

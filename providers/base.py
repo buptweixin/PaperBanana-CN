@@ -18,6 +18,7 @@ class BaseProvider(ABC):
         system_prompt: str = "",
         temperature: float = 1.0,
         max_output_tokens: int = 50000,
+        api_mode: str = "chat_completions",
         max_attempts: int = 5,
         retry_delay: float = 5,
         error_context: str = "",
@@ -31,6 +32,7 @@ class BaseProvider(ABC):
             system_prompt: 系统提示词
             temperature: 温度参数
             max_output_tokens: 最大输出 token 数
+            api_mode: 文本接口模式（chat_completions 或 responses）
             max_attempts: 最大重试次数
             retry_delay: 重试间隔（秒）
             error_context: 错误上下文信息

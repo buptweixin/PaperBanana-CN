@@ -37,6 +37,9 @@ class ExpConfig:
     model_name: str = ""
     image_model_name: str = ""
     provider: str = "evolink"
+    text_provider: str = ""
+    image_provider: str = ""
+    text_api_mode: str = "chat_completions"
     work_dir: Path = Path(__file__).parent.parent
 
     timestamp: str | None = None
@@ -45,7 +48,14 @@ class ExpConfig:
         os.environ["TZ"] = "America/Los_Angeles" # set the timezone as you like
         if hasattr(time, "tzset"):
             time.tzset()  # Unix only; no-op on Windows
-        
+
+        if not self.text_provider:
+            self.text_provider = self.provider
+        if not self.image_provider:
+            self.image_provider = self.provider
+        if not self.provider:
+            self.provider = self.text_provider or self.image_provider
+
         # Fallback to yaml config if no model_name provided
         if not self.model_name or not self.image_model_name:
             import yaml

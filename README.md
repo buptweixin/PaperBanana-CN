@@ -61,11 +61,12 @@ AI 驱动的学术论文配图生成工具 — 粘贴论文方法章节，自动
 
 ### 🔧 多 API 支持
 
-内置两种 API 提供商，开箱即用：
+内置三种 API 提供商，开箱即用：
 
 | 模式 | 说明 | 网络要求 |
 |------|------|---------|
 | **Evolink**（默认） | 国内 API 代理，直连可用 | 无需翻墙 |
+| **88996** | OpenAI 兼容国内代理 | 无需翻墙 |
 | **Google Gemini** | Google 官方 API | 需要科学上网 |
 
 在界面侧边栏一键切换，模型名称自动更新。
@@ -80,7 +81,10 @@ AI 驱动的学术论文配图生成工具 — 粘贴论文方法章节，自动
 
 **推荐 Evolink（国内直连）**：前往 https://evolink.ai/dashboard/keys 注册获取
 
-也可以用 Google Gemini：前往 https://aistudio.google.com/apikey 获取（需翻墙）
+也可以用 88996 或 Google Gemini：
+
+- 88996：按你自己的 88996 平台账号获取 Bearer Token
+- Gemini：前往 https://aistudio.google.com/apikey 获取（需翻墙）
 
 ### 第二步：启动程序
 
@@ -134,7 +138,7 @@ data/
 
 | 设置项 | 说明 |
 |--------|------|
-| API Provider | Evolink（国内直连）或 Gemini（需翻墙） |
+| API Provider | Evolink / 88996（国内直连）或 Gemini（需翻墙） |
 | API Key | 对应提供商的密钥 |
 | 文本模型 | 用于规划/评审的模型（默认 gemini-2.5-flash），可直接修改 |
 | 图像模型 | 用于生成图片的模型（默认 nano-banana-2-beta），可直接修改 |
