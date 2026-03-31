@@ -122,23 +122,11 @@ def create_sample_inputs(method_content, caption, diagram_type="Pipeline", aspec
     return inputs
 
 
-def _normalize_provider_keys(
-    text_provider: str,
-    image_provider: str,
-    text_api_key: str,
-    image_api_key: str,
-):
-    """统一处理双 provider 场景下的 API Key。"""
-    if text_provider == image_provider:
-        if text_api_key and image_api_key and text_api_key != image_api_key:
-            raise ValueError(
-                f"当前版本暂不支持同一 provider（{text_provider}）配置两套不同 API Key。"
-                "请使用同一个 Key，或改用不同的文本/图像 provider。"
-            )
-        shared_key = text_api_key or image_api_key
-        return shared_key, shared_key
-
-    return text_api_key, image_api_key
+def _get_provider_runtime_name(provider_name: str, role: str) -> str:
+    """为前端文本/图像 provider 生成独立运行时槽位名。"""
+    if provider_name == "gemini":
+        return provider_name
+    return f"{provider_name}#{role}"
 
 
 async def process_parallel_candidates(
@@ -152,6 +140,8 @@ async def process_parallel_candidates(
     text_api_mode="chat_completions",
     text_api_key="",
     image_api_key="",
+    text_base_url="",
+    image_base_url="",
     checkpoint_path=None,
 ):
     """使用 PaperVizProcessor 并行处理多个候选方案。"""
@@ -165,21 +155,29 @@ async def process_parallel_candidates(
     print(f"[DEBUG]   exp_mode={exp_mode}, retrieval={retrieval_setting}, candidates={len(data_list)}")
     print(f"[DEBUG]   text_api_key={'已设置 (' + text_api_key[:8] + '...)' if text_api_key else '未设置'}")
     print(f"[DEBUG]   image_api_key={'已设置 (' + image_api_key[:8] + '...)' if image_api_key else '未设置'}")
+    print(f"[DEBUG]   text_base_url={text_base_url or '(默认)'}")
+    print(f"[DEBUG]   image_base_url={image_base_url or '(默认)'}")
     print(f"{'='*60}")
 
-    text_api_key, image_api_key = _normalize_provider_keys(
-        text_provider=text_provider,
-        image_provider=image_provider,
-        text_api_key=text_api_key,
-        image_api_key=image_api_key,
-    )
+    if text_provider == image_provider:
+        if not text_api_key:
+            text_api_key = image_api_key
+        if not image_api_key:
+            image_api_key = text_api_key
+        if not text_base_url:
+            text_base_url = image_base_url
+        if not image_base_url:
+            image_base_url = text_base_url
+
+    runtime_text_provider = _get_provider_runtime_name(text_provider, "text")
+    runtime_image_provider = _get_provider_runtime_name(image_provider, "image")
 
     # 使用界面传入的 API Key 初始化 Provider
     from utils import generation_utils
     if text_api_key:
-        generation_utils.init_provider_client(text_provider, text_api_key)
-    if image_api_key and image_provider != text_provider:
-        generation_utils.init_provider_client(image_provider, image_api_key)
+        generation_utils.init_provider_client(runtime_text_provider, text_api_key, text_base_url)
+    if image_api_key:
+        generation_utils.init_provider_client(runtime_image_provider, image_api_key, image_base_url)
     if not text_api_key and not image_api_key:
         print(f"[DEBUG] ⚠️ 未提供 API Key，Provider 可能无法正常工作")
 
@@ -191,9 +189,9 @@ async def process_parallel_candidates(
         retrieval_setting=retrieval_setting,
         model_name=model_name,
         image_model_name=image_model_name,
-        provider=text_provider,
-        text_provider=text_provider,
-        image_provider=image_provider,
+        provider=runtime_text_provider,
+        text_provider=runtime_text_provider,
+        image_provider=runtime_image_provider,
         text_api_mode=text_api_mode,
         work_dir=Path(__file__).parent,
     )
@@ -230,7 +228,7 @@ async def process_parallel_candidates(
         if checkpoint_path and results:
             await asyncio.to_thread(dump_results_json, checkpoint_path, results)
         # 关闭 OpenAI 兼容 Provider 的共享 session，避免资源泄漏
-        for provider_name in {text_provider, image_provider}:
+        for provider_name in {runtime_text_provider, runtime_image_provider}:
             await generation_utils.close_provider_client(provider_name)
 
     return results
@@ -242,6 +240,7 @@ async def refine_image_with_nanoviz(
     image_size="2K",
     image_api_key="",
     image_provider="evolink",
+    image_base_url="",
 ):
     """
     使用图像编辑 API 精修图像，支持 Gemini 和 OpenAI 兼容 Provider。
@@ -305,16 +304,21 @@ async def refine_image_with_nanoviz(
 
         else:
             # ====== OpenAI 兼容 Provider 路径：内部按 provider 选择上传 URL 或直接 edits ======
+            runtime_image_provider = _get_provider_runtime_name(image_provider, "image")
             if image_api_key:
-                generation_utils.init_provider_client(image_provider, image_api_key)
+                generation_utils.init_provider_client(
+                    runtime_image_provider,
+                    image_api_key,
+                    image_base_url,
+                )
 
-            provider_client = generation_utils.get_openai_compatible_provider(image_provider)
+            provider_client = generation_utils.get_openai_compatible_provider(runtime_image_provider)
             if provider_client is None:
                 return None, f"❌ {image_provider} Provider 未初始化，请在侧边栏填入 API Key。"
 
             image_model = st.session_state.get("tab1_image_model_name", "gpt-image-1")
             result = await generation_utils.edit_openai_compatible_image_with_retry_async(
-                provider_name=image_provider,
+                provider_name=runtime_image_provider,
                 model_name=image_model,
                 image_bytes=image_bytes,
                 prompt=edit_prompt,
@@ -592,6 +596,9 @@ def main():
                     "api_key_label": "API Key",
                     "api_key_help": "Evolink API 密钥（Bearer Token）",
                     "api_key_default": get_config_val("evolink", "api_key", "EVOLINK_API_KEY", ""),
+                    "base_url_label": "Base URL",
+                    "base_url_help": "OpenAI 兼容接口根地址，例如 https://api.evolink.ai",
+                    "base_url_default": get_config_val("evolink", "base_url", "EVOLINK_BASE_URL", "https://api.evolink.ai"),
                     "model_name": "gemini-2.5-flash",
                     "image_model_name": "nano-banana-2-beta",
                 },
@@ -599,6 +606,9 @@ def main():
                     "api_key_label": "API Key",
                     "api_key_help": "88996 API 密钥（Bearer Token）",
                     "api_key_default": get_config_val("api88996", "api_key", "API88996_API_KEY", ""),
+                    "base_url_label": "Base URL",
+                    "base_url_help": "OpenAI 兼容接口根地址，例如 https://88996.cloud",
+                    "base_url_default": get_config_val("api88996", "base_url", "API88996_BASE_URL", "https://88996.cloud"),
                     "model_name": "gpt-5-mini",
                     "image_model_name": "gpt-image-1",
                 },
@@ -606,6 +616,9 @@ def main():
                     "api_key_label": "API Key",
                     "api_key_help": "GGboom API 密钥（Bearer Token）",
                     "api_key_default": get_config_val("ggboom", "api_key", "GGBOOM_API_KEY", ""),
+                    "base_url_label": "Base URL",
+                    "base_url_help": "OpenAI 兼容接口根地址，例如 https://ai.qaq.al",
+                    "base_url_default": get_config_val("ggboom", "base_url", "GGBOOM_BASE_URL", "https://ai.qaq.al"),
                     "model_name": "gpt-5.4",
                     "image_model_name": "",
                 },
@@ -613,6 +626,9 @@ def main():
                     "api_key_label": "Google API Key",
                     "api_key_help": "Google AI Studio API 密钥",
                     "api_key_default": get_config_val("api_keys", "google_api_key", "GOOGLE_API_KEY", ""),
+                    "base_url_label": "Base URL",
+                    "base_url_help": "Gemini 官方 SDK 不需要自定义 Base URL。",
+                    "base_url_default": "",
                     "model_name": "gemini-2.5-flash-preview-05-20",
                     "image_model_name": "gemini-2.0-flash-preview-image-generation",
                 },
@@ -625,6 +641,10 @@ def main():
                 st.session_state["tab1_text_api_key"] = _text_pd["api_key_default"]
             if "tab1_image_api_key" not in st.session_state:
                 st.session_state["tab1_image_api_key"] = _image_pd["api_key_default"]
+            if "tab1_text_base_url" not in st.session_state:
+                st.session_state["tab1_text_base_url"] = _text_pd["base_url_default"]
+            if "tab1_image_base_url" not in st.session_state:
+                st.session_state["tab1_image_base_url"] = _image_pd["base_url_default"]
             if "tab1_model_name" not in st.session_state:
                 st.session_state["tab1_model_name"] = _text_pd["model_name"]
             if "tab1_image_model_name" not in st.session_state:
@@ -638,6 +658,7 @@ def main():
                 st.session_state["prev_text_provider"] = text_provider
                 st.session_state["tab1_model_name"] = _text_pd["model_name"]
                 st.session_state["tab1_text_api_key"] = _text_pd["api_key_default"]
+                st.session_state["tab1_text_base_url"] = _text_pd["base_url_default"]
                 provider_switched = True
 
             if "prev_image_provider" not in st.session_state:
@@ -646,6 +667,7 @@ def main():
                 st.session_state["prev_image_provider"] = image_provider
                 st.session_state["tab1_image_model_name"] = _image_pd["image_model_name"]
                 st.session_state["tab1_image_api_key"] = _image_pd["api_key_default"]
+                st.session_state["tab1_image_base_url"] = _image_pd["base_url_default"]
                 provider_switched = True
 
             if provider_switched:
@@ -664,6 +686,22 @@ def main():
                 type="password",
                 key="tab1_image_api_key",
                 help=_image_pd["api_key_help"]
+            )
+
+            text_base_url = st.text_input(
+                f"文本 {_text_pd['base_url_label']}",
+                key="tab1_text_base_url",
+                help=_text_pd["base_url_help"],
+                disabled=text_provider == "gemini",
+                placeholder="留空则使用默认地址"
+            )
+
+            image_base_url = st.text_input(
+                f"图像 {_image_pd['base_url_label']}",
+                key="tab1_image_base_url",
+                help=_image_pd["base_url_help"],
+                disabled=image_provider == "gemini",
+                placeholder="留空则使用默认地址"
             )
 
             # 文本模型
@@ -820,6 +858,8 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                             text_api_mode=text_api_mode,
                             text_api_key=text_api_key,
                             image_api_key=image_api_key,
+                            text_base_url=text_base_url.strip(),
+                            image_base_url=image_base_url.strip(),
                             checkpoint_path=json_filename,
                         ))
                         st.session_state["results"] = results
@@ -1013,6 +1053,7 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                                         image_size=refine_resolution,
                                         image_api_key=image_api_key,
                                         image_provider=image_provider,
+                                        image_base_url=image_base_url.strip(),
                                     )
                                 )
 

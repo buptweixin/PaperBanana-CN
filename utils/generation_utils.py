@@ -49,6 +49,7 @@ def get_config_val(section, key, env_var, default=""):
 evolink_provider = None
 api88996_provider = None
 ggboom_provider = None
+provider_clients: Dict[str, Any] = {}
 
 evolink_api_key = get_config_val("evolink", "api_key", "EVOLINK_API_KEY", "")
 evolink_base_url = get_config_val("evolink", "base_url", "EVOLINK_BASE_URL", "https://api.evolink.ai")
@@ -60,6 +61,7 @@ ggboom_base_url = get_config_val("ggboom", "base_url", "GGBOOM_BASE_URL", "https
 if evolink_api_key:
     from providers.evolink import EvolinkProvider
     evolink_provider = EvolinkProvider(api_key=evolink_api_key, base_url=evolink_base_url)
+    provider_clients["evolink"] = evolink_provider
     print(f"已初始化 Evolink Provider (base_url={evolink_base_url})")
 else:
     print("警告：未配置 Evolink API Key，Evolink Provider 不可用。")
@@ -67,6 +69,7 @@ else:
 if api88996_api_key:
     from providers.api88996 import Api88996Provider
     api88996_provider = Api88996Provider(api_key=api88996_api_key, base_url=api88996_base_url)
+    provider_clients["88996"] = api88996_provider
     print(f"已初始化 88996 Provider (base_url={api88996_base_url})")
 else:
     print("警告：未配置 88996 API Key，88996 Provider 不可用。")
@@ -74,9 +77,28 @@ else:
 if ggboom_api_key:
     from providers.ggboom import GgboomProvider
     ggboom_provider = GgboomProvider(api_key=ggboom_api_key, base_url=ggboom_base_url)
+    provider_clients["ggboom"] = ggboom_provider
     print(f"已初始化 GGboom Provider (base_url={ggboom_base_url})")
 else:
     print("警告：未配置 GGboom API Key，GGboom Provider 不可用。")
+
+def _get_provider_family(provider_name: str) -> str:
+    """提取 provider 家族名，支持通过 #slot 复用同一 provider 类型的多实例。"""
+    return provider_name.split("#", 1)[0]
+
+
+def _register_provider_client(provider_name: str, provider: Any):
+    """注册 provider 实例，并同步兼容旧的全局变量。"""
+    global evolink_provider, api88996_provider, ggboom_provider
+    provider_clients[provider_name] = provider
+
+    provider_family = _get_provider_family(provider_name)
+    if provider_family == "evolink":
+        evolink_provider = provider
+    elif provider_family == "88996":
+        api88996_provider = provider
+    elif provider_family == "ggboom":
+        ggboom_provider = provider
 
 
 def init_evolink_provider(api_key: str, base_url: str = ""):
@@ -87,7 +109,19 @@ def init_evolink_provider(api_key: str, base_url: str = ""):
     url = base_url or evolink_base_url
     from providers.evolink import EvolinkProvider
     evolink_provider = EvolinkProvider(api_key=api_key, base_url=url)
+    _register_provider_client("evolink", evolink_provider)
     print(f"已通过界面初始化 Evolink Provider (base_url={url})")
+
+
+def init_evolink_provider_for_slot(provider_name: str, api_key: str, base_url: str = ""):
+    """为指定槽位初始化 Evolink Provider。"""
+    if not api_key:
+        return
+    url = base_url or evolink_base_url
+    from providers.evolink import EvolinkProvider
+    provider = EvolinkProvider(api_key=api_key, base_url=url)
+    _register_provider_client(provider_name, provider)
+    print(f"已通过界面初始化 Evolink Provider[{provider_name}] (base_url={url})")
 
 
 def init_api88996_provider(api_key: str, base_url: str = ""):
@@ -98,7 +132,19 @@ def init_api88996_provider(api_key: str, base_url: str = ""):
     url = base_url or api88996_base_url
     from providers.api88996 import Api88996Provider
     api88996_provider = Api88996Provider(api_key=api_key, base_url=url)
+    _register_provider_client("88996", api88996_provider)
     print(f"已通过界面初始化 88996 Provider (base_url={url})")
+
+
+def init_api88996_provider_for_slot(provider_name: str, api_key: str, base_url: str = ""):
+    """为指定槽位初始化 88996 Provider。"""
+    if not api_key:
+        return
+    url = base_url or api88996_base_url
+    from providers.api88996 import Api88996Provider
+    provider = Api88996Provider(api_key=api_key, base_url=url)
+    _register_provider_client(provider_name, provider)
+    print(f"已通过界面初始化 88996 Provider[{provider_name}] (base_url={url})")
 
 
 def init_ggboom_provider(api_key: str, base_url: str = ""):
@@ -109,36 +155,58 @@ def init_ggboom_provider(api_key: str, base_url: str = ""):
     url = base_url or ggboom_base_url
     from providers.ggboom import GgboomProvider
     ggboom_provider = GgboomProvider(api_key=api_key, base_url=url)
+    _register_provider_client("ggboom", ggboom_provider)
     print(f"已通过界面初始化 GGboom Provider (base_url={url})")
+
+
+def init_ggboom_provider_for_slot(provider_name: str, api_key: str, base_url: str = ""):
+    """为指定槽位初始化 GGboom Provider。"""
+    if not api_key:
+        return
+    url = base_url or ggboom_base_url
+    from providers.ggboom import GgboomProvider
+    provider = GgboomProvider(api_key=api_key, base_url=url)
+    _register_provider_client(provider_name, provider)
+    print(f"已通过界面初始化 GGboom Provider[{provider_name}] (base_url={url})")
 
 
 def init_provider_client(provider_name: str, api_key: str, base_url: str = ""):
     """根据 provider 名称初始化对应客户端。"""
     if not api_key:
         return
-    if provider_name == "evolink":
-        init_evolink_provider(api_key, base_url)
-    elif provider_name == "88996":
-        init_api88996_provider(api_key, base_url)
-    elif provider_name == "ggboom":
-        init_ggboom_provider(api_key, base_url)
-    elif provider_name == "gemini":
+    provider_family = _get_provider_family(provider_name)
+    if provider_family == "evolink":
+        init_evolink_provider_for_slot(provider_name, api_key, base_url)
+    elif provider_family == "88996":
+        init_api88996_provider_for_slot(provider_name, api_key, base_url)
+    elif provider_family == "ggboom":
+        init_ggboom_provider_for_slot(provider_name, api_key, base_url)
+    elif provider_family == "gemini":
         init_gemini_client(api_key)
 
 
 def is_openai_compatible_provider(provider_name: str) -> bool:
     """判断是否为项目内的 OpenAI 兼容 Provider。"""
-    return provider_name in {"evolink", "88996", "ggboom"}
+    return _get_provider_family(provider_name) in {"evolink", "88996", "ggboom"}
 
 
 def get_openai_compatible_provider(provider_name: str):
     """获取已初始化的 OpenAI 兼容 Provider 实例。"""
+    provider_family = _get_provider_family(provider_name)
     if provider_name == "evolink":
         return evolink_provider
     if provider_name == "88996":
         return api88996_provider
     if provider_name == "ggboom":
         return ggboom_provider
+
+    provider = provider_clients.get(provider_name)
+    if provider is not None:
+        return provider
+
+    if provider_family != provider_name:
+        return provider_clients.get(provider_family)
+
     return None
 
 
@@ -147,6 +215,7 @@ async def close_provider_client(provider_name: str):
     provider = get_openai_compatible_provider(provider_name)
     if provider and hasattr(provider, "close"):
         await provider.close()
+        provider_clients.pop(provider_name, None)
 
 
 def init_gemini_client(api_key: str):
@@ -294,14 +363,17 @@ async def edit_openai_compatible_image_with_retry_async(
     error_context="",
 ):
     """统一封装 image-to-image 能力，屏蔽各 provider 的差异。"""
-    if provider_name == "evolink":
+    provider_family = _get_provider_family(provider_name)
+
+    if provider_family == "evolink":
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
         ref_image_url = await upload_image_to_evolink(
             image_b64,
             media_type=config.get("media_type", "image/jpeg"),
+            provider_name=provider_name,
         )
         return await call_openai_compatible_image_with_retry_async(
-            provider_name="evolink",
+            provider_name=provider_name,
             model_name=model_name,
             prompt=prompt,
             config={
@@ -314,7 +386,7 @@ async def edit_openai_compatible_image_with_retry_async(
             error_context=error_context,
         )
 
-    if provider_name == "88996":
+    if provider_family == "88996":
         provider = get_openai_compatible_provider(provider_name)
         if provider is None:
             raise RuntimeError("88996 Provider 未初始化，请检查 API Key 配置。")
@@ -362,16 +434,21 @@ async def call_api88996_text_with_retry_async(
     )
 
 
-async def upload_image_to_evolink(image_b64: str, media_type: str = "image/jpeg") -> str:
+async def upload_image_to_evolink(
+    image_b64: str,
+    media_type: str = "image/jpeg",
+    provider_name: str = "evolink",
+) -> str:
     """
     将 base64 图片上传到 Evolink 文件服务，返回可访问的 URL。
 
     用于 image-to-image 场景（如 Polish Agent），需要先把本地 base64 图片
     上传为 URL，才能传给图像生成 API 的 image_urls 参数。
     """
-    if evolink_provider is None:
+    provider = get_openai_compatible_provider(provider_name)
+    if provider is None:
         raise RuntimeError("Evolink Provider 未初始化，请检查 EVOLINK_API_KEY 配置。")
-    url = await evolink_provider.upload_image_base64(image_b64, media_type)
+    url = await provider.upload_image_base64(image_b64, media_type)
     if not url:
         raise RuntimeError("图片上传到 Evolink 文件服务失败")
     return url
