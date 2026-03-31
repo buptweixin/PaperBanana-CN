@@ -29,10 +29,19 @@ class Api88996Provider(BaseProvider):
         self,
         api_key: str,
         base_url: str = "https://88996.cloud",
+        provider_label: str = "88996",
     ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        self.provider_label = provider_label
         self._session: Optional[aiohttp.ClientSession] = None
+
+    def _provider_tag(self) -> str:
+        return self.provider_label
+
+    def _image_payload_extra(self) -> Dict[str, Any]:
+        """允许子类为图片接口补充额外参数。"""
+        return {}
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """获取共享 aiohttp session，避免频繁创建连接。"""
@@ -233,16 +242,19 @@ class Api88996Provider(BaseProvider):
         quality: str,
     ) -> Dict[str, Any]:
         """构建文生图请求体。"""
-        return {
+        payload = {
             "model": model_name,
             "prompt": prompt,
             "size": self._map_size(aspect_ratio, quality),
         }
+        payload.update(self._image_payload_extra())
+        return payload
 
     async def _post_json(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """发送 POST JSON 请求并返回 JSON 响应。"""
-        print(f"[DEBUG] [88996] POST {url}")
-        print(f"[DEBUG] [88996]   model={payload.get('model', 'N/A')}, payload keys={list(payload.keys())}")
+        tag = self._provider_tag()
+        print(f"[DEBUG] [{tag}] POST {url}")
+        print(f"[DEBUG] [{tag}]   model={payload.get('model', 'N/A')}, payload keys={list(payload.keys())}")
         session = await self._get_session()
         async with session.post(
             url,
@@ -252,10 +264,10 @@ class Api88996Provider(BaseProvider):
         ) as resp:
             status = resp.status
             body = await resp.json()
-            print(f"[DEBUG] [88996]   响应 status={status}, keys={list(body.keys()) if isinstance(body, dict) else type(body)}")
+            print(f"[DEBUG] [{tag}]   响应 status={status}, keys={list(body.keys()) if isinstance(body, dict) else type(body)}")
             if status >= 400:
                 error_msg = body.get("error", body) if isinstance(body, dict) else body
-                print(f"[DEBUG] [88996]   ❌ 错误详情: {error_msg}")
+                print(f"[DEBUG] [{tag}]   ❌ 错误详情: {error_msg}")
                 if 400 <= status < 500 and status != 429:
                     raise ClientError(f"HTTP {status}: {error_msg}")
             resp.raise_for_status()
@@ -267,7 +279,8 @@ class Api88996Provider(BaseProvider):
         form_data: aiohttp.FormData,
     ) -> Dict[str, Any]:
         """发送 multipart/form-data 请求并返回 JSON 响应。"""
-        print(f"[DEBUG] [88996] POST {url} (multipart/form-data)")
+        tag = self._provider_tag()
+        print(f"[DEBUG] [{tag}] POST {url} (multipart/form-data)")
         session = await self._get_session()
         async with session.post(
             url,
@@ -277,10 +290,10 @@ class Api88996Provider(BaseProvider):
         ) as resp:
             status = resp.status
             body = await resp.json()
-            print(f"[DEBUG] [88996]   响应 status={status}, keys={list(body.keys()) if isinstance(body, dict) else type(body)}")
+            print(f"[DEBUG] [{tag}]   响应 status={status}, keys={list(body.keys()) if isinstance(body, dict) else type(body)}")
             if status >= 400:
                 error_msg = body.get("error", body) if isinstance(body, dict) else body
-                print(f"[DEBUG] [88996]   ❌ 错误详情: {error_msg}")
+                print(f"[DEBUG] [{tag}]   ❌ 错误详情: {error_msg}")
                 if 400 <= status < 500 and status != 429:
                     raise ClientError(f"HTTP {status}: {error_msg}")
             resp.raise_for_status()
@@ -295,7 +308,7 @@ class Api88996Provider(BaseProvider):
                 image_data = await resp.read()
                 return base64.b64encode(image_data).decode("utf-8")
         except Exception as e:
-            print(f"[88996] 下载图片失败 ({url}): {e}")
+            print(f"[{self._provider_tag()}] 下载图片失败 ({url}): {e}")
             return None
 
     async def _download_image_bytes(self, url: str) -> Optional[bytes]:
@@ -306,7 +319,7 @@ class Api88996Provider(BaseProvider):
                 resp.raise_for_status()
                 return await resp.read()
         except Exception as e:
-            print(f"[88996] 下载参考图失败 ({url}): {e}")
+            print(f"[{self._provider_tag()}] 下载参考图失败 ({url}): {e}")
             return None
 
     async def _extract_image_result(self, response: Dict[str, Any]) -> Optional[str]:
@@ -321,7 +334,7 @@ class Api88996Provider(BaseProvider):
 
         image_url = first.get("url")
         if image_url:
-            print(f"[88996 图像] 下载图片: {image_url[:80]}...")
+            print(f"[{self._provider_tag()} 图像] 下载图片: {image_url[:80]}...")
             return await self._download_image_as_base64(image_url)
 
         return None
@@ -359,8 +372,9 @@ class Api88996Provider(BaseProvider):
             )
 
         content_types = [item.get("type", "?") for item in contents]
-        print(f"[DEBUG] [88996 文本] 请求: mode={api_mode}, model={model_name}, temp={temperature}, max_tokens={max_output_tokens}")
-        print(f"[DEBUG] [88996 文本]   内容: {content_types}, system_prompt 长度={len(system_prompt) if system_prompt else 0}")
+        tag = self._provider_tag()
+        print(f"[DEBUG] [{tag} 文本] 请求: mode={api_mode}, model={model_name}, temp={temperature}, max_tokens={max_output_tokens}")
+        print(f"[DEBUG] [{tag} 文本]   内容: {content_types}, system_prompt 长度={len(system_prompt) if system_prompt else 0}")
 
         for attempt in range(max_attempts):
             try:
@@ -375,29 +389,29 @@ class Api88996Provider(BaseProvider):
 
                 if text.strip():
                     usage = response.get("usage", {})
-                    print(f"[DEBUG] [88996 文本] ✓ 成功, 响应长度={len(text)}, usage={usage}")
+                    print(f"[DEBUG] [{tag} 文本] ✓ 成功, 响应长度={len(text)}, usage={usage}")
                     return [text]
 
-                print(f"[88996 文本] 响应为空，{retry_delay}s 后重试...")
+                print(f"[{tag} 文本] 响应为空，{retry_delay}s 后重试...")
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(retry_delay)
 
             except ClientError as e:
                 context_msg = f" ({error_context})" if error_context else ""
-                print(f"[88996 文本] ❌ 客户端错误{context_msg}: {e}。不再重试。")
+                print(f"[{tag} 文本] ❌ 客户端错误{context_msg}: {e}。不再重试。")
                 return ["Error"]
 
             except Exception as e:
                 context_msg = f" ({error_context})" if error_context else ""
                 current_delay = min(retry_delay * (2 ** attempt), 30)
                 print(
-                    f"[88996 文本] 第 {attempt + 1} 次尝试失败{context_msg}: {e}。"
+                    f"[{tag} 文本] 第 {attempt + 1} 次尝试失败{context_msg}: {e}。"
                     f"{current_delay}s 后重试..."
                 )
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(current_delay)
                 else:
-                    print(f"[88996 文本] 全部 {max_attempts} 次尝试失败{context_msg}")
+                    print(f"[{tag} 文本] 全部 {max_attempts} 次尝试失败{context_msg}")
 
         return ["Error"]
 
@@ -441,37 +455,38 @@ class Api88996Provider(BaseProvider):
             aspect_ratio=aspect_ratio,
             quality=quality,
         )
-        print(f"[DEBUG] [88996 图像] 请求: model={model_name}, size={payload['size']}")
-        print(f"[DEBUG] [88996 图像]   prompt 长度={len(prompt)}, 前100字: {prompt[:100]}...")
+        tag = self._provider_tag()
+        print(f"[DEBUG] [{tag} 图像] 请求: model={model_name}, size={payload['size']}")
+        print(f"[DEBUG] [{tag} 图像]   prompt 长度={len(prompt)}, 前100字: {prompt[:100]}...")
 
         for attempt in range(max_attempts):
             try:
                 response = await self._post_json(url, payload)
                 image_b64 = await self._extract_image_result(response)
                 if image_b64:
-                    print(f"[DEBUG] [88996 图像] ✓ 成功, base64 长度={len(image_b64)}")
+                    print(f"[DEBUG] [{tag} 图像] ✓ 成功, base64 长度={len(image_b64)}")
                     return [image_b64]
 
-                print(f"[88996 图像] 响应中未找到有效图片，{retry_delay}s 后重试...")
+                print(f"[{tag} 图像] 响应中未找到有效图片，{retry_delay}s 后重试...")
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(retry_delay)
 
             except ClientError as e:
                 context_msg = f" ({error_context})" if error_context else ""
-                print(f"[88996 图像] ❌ 客户端错误{context_msg}: {e}。不再重试。")
+                print(f"[{tag} 图像] ❌ 客户端错误{context_msg}: {e}。不再重试。")
                 return ["Error"]
 
             except Exception as e:
                 context_msg = f" ({error_context})" if error_context else ""
                 current_delay = min(retry_delay * (2 ** attempt), 60)
                 print(
-                    f"[88996 图像] 第 {attempt + 1} 次尝试失败{context_msg}: {e}。"
+                    f"[{tag} 图像] 第 {attempt + 1} 次尝试失败{context_msg}: {e}。"
                     f"{current_delay}s 后重试..."
                 )
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(current_delay)
                 else:
-                    print(f"[88996 图像] 全部 {max_attempts} 次尝试失败{context_msg}")
+                    print(f"[{tag} 图像] 全部 {max_attempts} 次尝试失败{context_msg}")
 
         return ["Error"]
 
@@ -491,7 +506,8 @@ class Api88996Provider(BaseProvider):
         """通过 /v1/images/edits 编辑图片。"""
         url = f"{self.base_url}/v1/images/edits"
         size = self._map_size(aspect_ratio, quality)
-        print(f"[DEBUG] [88996 编辑] 请求: model={model_name}, size={size}, prompt 长度={len(prompt)}")
+        tag = self._provider_tag()
+        print(f"[DEBUG] [{tag} 编辑] 请求: model={model_name}, size={size}, prompt 长度={len(prompt)}")
 
         for attempt in range(max_attempts):
             try:
@@ -509,28 +525,28 @@ class Api88996Provider(BaseProvider):
                 response = await self._post_form(url, form)
                 image_b64 = await self._extract_image_result(response)
                 if image_b64:
-                    print(f"[DEBUG] [88996 编辑] ✓ 成功, base64 长度={len(image_b64)}")
+                    print(f"[DEBUG] [{tag} 编辑] ✓ 成功, base64 长度={len(image_b64)}")
                     return [image_b64]
 
-                print(f"[88996 编辑] 响应中未找到有效图片，{retry_delay}s 后重试...")
+                print(f"[{tag} 编辑] 响应中未找到有效图片，{retry_delay}s 后重试...")
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(retry_delay)
 
             except ClientError as e:
                 context_msg = f" ({error_context})" if error_context else ""
-                print(f"[88996 编辑] ❌ 客户端错误{context_msg}: {e}。不再重试。")
+                print(f"[{tag} 编辑] ❌ 客户端错误{context_msg}: {e}。不再重试。")
                 return ["Error"]
 
             except Exception as e:
                 context_msg = f" ({error_context})" if error_context else ""
                 current_delay = min(retry_delay * (2 ** attempt), 60)
                 print(
-                    f"[88996 编辑] 第 {attempt + 1} 次尝试失败{context_msg}: {e}。"
+                    f"[{tag} 编辑] 第 {attempt + 1} 次尝试失败{context_msg}: {e}。"
                     f"{current_delay}s 后重试..."
                 )
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(current_delay)
                 else:
-                    print(f"[88996 编辑] 全部 {max_attempts} 次尝试失败{context_msg}")
+                    print(f"[{tag} 编辑] 全部 {max_attempts} 次尝试失败{context_msg}")
 
         return ["Error"]

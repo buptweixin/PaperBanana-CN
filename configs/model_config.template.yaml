@@ -16,11 +16,11 @@
 
 # Default Models
 defaults:
-  text_provider: "evolink" # gemini / evolink / 88996 / ggboom
-  image_provider: "evolink" # gemini / evolink / 88996
+  text_provider: "uniapi" # gemini / uniapi / evolink / 88996 / ggboom
+  image_provider: "uniapi" # gemini / uniapi / evolink / 88996
   text_api_mode: "chat_completions" # chat_completions / responses
-  model_name: "" # e.g., "gemini-3-pro-preview"
-  image_model_name: "" # e.g., "gemini-3-pro-image-preview"
+  model_name: "gpt-5.4" # e.g., "gemini-3-pro-preview"
+  image_model_name: "gemini-3.1-flash-image-preview" # e.g., "gemini-3-pro-image-preview"
   
 # API Keys. If you are using all gemini models, you can leave the other keys empty.
 api_keys:
@@ -36,6 +36,10 @@ evolink:
 api88996:
   api_key: ""
   base_url: "https://88996.cloud"
+
+uniapi:
+  api_key: ""
+  base_url: "https://api.uniapi.io"
 
 ggboom:
   api_key: ""

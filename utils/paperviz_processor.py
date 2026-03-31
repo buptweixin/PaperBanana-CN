@@ -58,6 +58,11 @@ class PaperVizProcessor:
         self.retriever_agent = retriever_agent
         self.polish_agent = polish_agent
 
+    def _check_cancel(self, cancel_event=None):
+        """检测是否收到停止请求。"""
+        if cancel_event is not None and cancel_event.is_set():
+            raise asyncio.CancelledError("用户请求停止生成任务")
+
     async def _notify_progress(
         self,
         progress_callback: Optional[Callable[[Dict[str, Any]], Any]],
@@ -94,6 +99,7 @@ class PaperVizProcessor:
         max_rounds: int = 3,
         source: str = "stylist",
         progress_callback: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        cancel_event=None,
     ) -> Dict[str, Any]:
         """
         Run multi-round critic iteration (up to max_rounds).
@@ -112,6 +118,7 @@ class PaperVizProcessor:
             current_best_image_key = f"target_{task_name}_stylist_desc0_base64_jpg"
             
         for round_idx in range(max_rounds):
+            self._check_cancel(cancel_event)
             data["current_critic_round"] = round_idx
             await self._notify_progress(
                 progress_callback,
@@ -173,6 +180,7 @@ class PaperVizProcessor:
         data: Dict[str, Any],
         do_eval=True,
         progress_callback: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        cancel_event=None,
     ) -> Dict[str, Any]:
         """
         Complete processing pipeline for a single query
@@ -186,6 +194,7 @@ class PaperVizProcessor:
             f"[DEBUG]   exp_mode={exp_mode}, task={task_name}, retrieval={retrieval_setting}, "
             f"text_provider={self.exp_config.text_provider}, image_provider={self.exp_config.image_provider}"
         )
+        self._check_cancel(cancel_event)
         await self._notify_progress(
             progress_callback,
             candidate_id=candidate_id,
@@ -197,6 +206,7 @@ class PaperVizProcessor:
 
         if exp_mode == "vanilla":
             print(f"[DEBUG] [{candidate_id}] 流水线: vanilla_agent")
+            self._check_cancel(cancel_event)
             data = await self.vanilla_agent.process(data)
             data["eval_image_field"] = f"vanilla_{task_name}_base64_jpg"
             await self._notify_progress(
@@ -210,12 +220,15 @@ class PaperVizProcessor:
 
         elif exp_mode == "dev_planner":
             print(f"[DEBUG] [{candidate_id}] 流水线: retriever → planner → visualizer")
+            self._check_cancel(cancel_event)
             data = await self.retriever_agent.process(data, retrieval_setting=retrieval_setting)
             print(f"[DEBUG] [{candidate_id}] ✓ retriever 完成")
             await self._notify_progress(progress_callback, candidate_id=candidate_id, stage="retriever", status="success", data=data, message="检索完成")
+            self._check_cancel(cancel_event)
             data = await self.planner_agent.process(data)
             print(f"[DEBUG] [{candidate_id}] ✓ planner 完成")
             await self._notify_progress(progress_callback, candidate_id=candidate_id, stage="planner", status="success", data=data, message="规划描述已生成")
+            self._check_cancel(cancel_event)
             data = await self.visualizer_agent.process(data)
             print(f"[DEBUG] [{candidate_id}] ✓ visualizer 完成")
             await self._notify_progress(progress_callback, candidate_id=candidate_id, stage="visualizer", status="success", data=data, message="首版图像已生成")
@@ -223,15 +236,19 @@ class PaperVizProcessor:
 
         elif exp_mode == "dev_planner_stylist":
             print(f"[DEBUG] [{candidate_id}] 流水线: retriever → planner → stylist → visualizer")
+            self._check_cancel(cancel_event)
             data = await self.retriever_agent.process(data, retrieval_setting=retrieval_setting)
             print(f"[DEBUG] [{candidate_id}] ✓ retriever 完成")
             await self._notify_progress(progress_callback, candidate_id=candidate_id, stage="retriever", status="success", data=data, message="检索完成")
+            self._check_cancel(cancel_event)
             data = await self.planner_agent.process(data)
             print(f"[DEBUG] [{candidate_id}] ✓ planner 完成")
             await self._notify_progress(progress_callback, candidate_id=candidate_id, stage="planner", status="success", data=data, message="规划描述已生成")
+            self._check_cancel(cancel_event)
             data = await self.stylist_agent.process(data)
             print(f"[DEBUG] [{candidate_id}] ✓ stylist 完成")
             await self._notify_progress(progress_callback, candidate_id=candidate_id, stage="stylist", status="success", data=data, message="风格优化完成")
+            self._check_cancel(cancel_event)
             data = await self.visualizer_agent.process(data)
             print(f"[DEBUG] [{candidate_id}] ✓ visualizer 完成")
             await self._notify_progress(progress_callback, candidate_id=candidate_id, stage="visualizer", status="success", data=data, message="首版图像已生成")
@@ -240,12 +257,15 @@ class PaperVizProcessor:
         elif exp_mode in ["dev_planner_critic", "demo_planner_critic"]:
             max_rounds = data.get("max_critic_rounds", 3)
             print(f"[DEBUG] [{candidate_id}] 流水线: retriever → planner → visualizer → critic×{max_rounds}")
+            self._check_cancel(cancel_event)
             data = await self.retriever_agent.process(data, retrieval_setting=retrieval_setting)
             print(f"[DEBUG] [{candidate_id}] ✓ retriever 完成")
             await self._notify_progress(progress_callback, candidate_id=candidate_id, stage="retriever", status="success", data=data, message="检索完成")
+            self._check_cancel(cancel_event)
             data = await self.planner_agent.process(data)
             print(f"[DEBUG] [{candidate_id}] ✓ planner 完成, desc0 长度={len(data.get(f'target_{task_name}_desc0', ''))}")
             await self._notify_progress(progress_callback, candidate_id=candidate_id, stage="planner", status="success", data=data, message="规划描述已生成")
+            self._check_cancel(cancel_event)
             data = await self.visualizer_agent.process(data)
             has_img = f"target_{task_name}_desc0_base64_jpg" in data and bool(data.get(f"target_{task_name}_desc0_base64_jpg"))
             print(f"[DEBUG] [{candidate_id}] ✓ visualizer 完成, 图像生成={'成功' if has_img else '失败'}")
@@ -263,6 +283,7 @@ class PaperVizProcessor:
                 max_rounds=max_rounds,
                 source="planner",
                 progress_callback=progress_callback,
+                cancel_event=cancel_event,
             )
             print(f"[DEBUG] [{candidate_id}] ✓ critic 迭代完成, eval_image_field={data.get('eval_image_field')}")
             if "demo" in exp_mode: do_eval = False
@@ -270,15 +291,19 @@ class PaperVizProcessor:
         elif exp_mode in ["dev_full", "demo_full"]:
             max_rounds = data.get("max_critic_rounds", self.exp_config.max_critic_rounds)
             print(f"[DEBUG] [{candidate_id}] 流水线: retriever → planner → stylist → visualizer → critic×{max_rounds}")
+            self._check_cancel(cancel_event)
             data = await self.retriever_agent.process(data, retrieval_setting=retrieval_setting)
             print(f"[DEBUG] [{candidate_id}] ✓ retriever 完成")
             await self._notify_progress(progress_callback, candidate_id=candidate_id, stage="retriever", status="success", data=data, message="检索完成")
+            self._check_cancel(cancel_event)
             data = await self.planner_agent.process(data)
             print(f"[DEBUG] [{candidate_id}] ✓ planner 完成, desc0 长度={len(data.get(f'target_{task_name}_desc0', ''))}")
             await self._notify_progress(progress_callback, candidate_id=candidate_id, stage="planner", status="success", data=data, message="规划描述已生成")
+            self._check_cancel(cancel_event)
             data = await self.stylist_agent.process(data)
             print(f"[DEBUG] [{candidate_id}] ✓ stylist 完成")
             await self._notify_progress(progress_callback, candidate_id=candidate_id, stage="stylist", status="success", data=data, message="风格优化完成")
+            self._check_cancel(cancel_event)
             data = await self.visualizer_agent.process(data)
             has_img = f"target_{task_name}_stylist_desc0_base64_jpg" in data and bool(data.get(f"target_{task_name}_stylist_desc0_base64_jpg"))
             print(f"[DEBUG] [{candidate_id}] ✓ visualizer 完成, 图像生成={'成功' if has_img else '失败'}")
@@ -296,17 +321,20 @@ class PaperVizProcessor:
                 max_rounds=max_rounds,
                 source="stylist",
                 progress_callback=progress_callback,
+                cancel_event=cancel_event,
             )
             print(f"[DEBUG] [{candidate_id}] ✓ critic 迭代完成, eval_image_field={data.get('eval_image_field')}")
             if "demo" in exp_mode: do_eval = False
 
         elif exp_mode == "dev_polish":
             print(f"[DEBUG] [{candidate_id}] 流水线: polish_agent")
+            self._check_cancel(cancel_event)
             data = await self.polish_agent.process(data)
             data["eval_image_field"] = f"polished_{task_name}_base64_jpg"
 
         elif exp_mode == "dev_retriever":
             print(f"[DEBUG] [{candidate_id}] 流水线: retriever_agent")
+            self._check_cancel(cancel_event)
             data = await self.retriever_agent.process(data)
             do_eval = False
 
@@ -335,6 +363,7 @@ class PaperVizProcessor:
         max_concurrent: int = 50,
         do_eval: bool = True,
         progress_callback: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        cancel_event=None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Batch process queries with concurrency support
@@ -344,15 +373,28 @@ class PaperVizProcessor:
         async def process_with_semaphore(doc):
             async with semaphore:
                 try:
+                    self._check_cancel(cancel_event)
                     result = await self.process_single_query(
                         doc,
                         do_eval=do_eval,
                         progress_callback=progress_callback,
+                        cancel_event=cancel_event,
                     )
                     result["processing_status"] = "success"
                     return result
                 except asyncio.CancelledError:
-                    raise
+                    cancelled_result = dict(doc)
+                    cancelled_result["processing_status"] = "cancelled"
+                    cancelled_result["processing_error"] = "用户请求停止生成任务"
+                    await self._notify_progress(
+                        progress_callback,
+                        candidate_id=doc.get("candidate_id", "N/A"),
+                        stage="cancelled",
+                        status="cancelled",
+                        data=cancelled_result,
+                        message="已停止该候选方案的后续处理",
+                    )
+                    return cancelled_result
                 except Exception as e:
                     failed_result = dict(doc)
                     failed_result["processing_status"] = "failed"
@@ -376,6 +418,7 @@ class PaperVizProcessor:
         # Create all tasks
         tasks = []
         for data in data_list:
+            self._check_cancel(cancel_event)
             task = asyncio.create_task(process_with_semaphore(data))
             tasks.append(task)
         
@@ -385,7 +428,14 @@ class PaperVizProcessor:
         with tqdm(total=len(tasks), desc="Processing concurrently") as pbar:
             # Iterate through completed tasks returned by as_completed
             for future in asyncio.as_completed(tasks):
+                if cancel_event is not None and cancel_event.is_set():
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    break
                 result_data = await future
+                if result_data.get("processing_status") == "cancelled":
+                    continue
                 all_result_list.append(result_data)
                 await self._notify_progress(
                     progress_callback,
@@ -421,6 +471,9 @@ class PaperVizProcessor:
                 pbar.set_postfix(postfix_dict)
                 pbar.update(1)
                 yield result_data
+
+        if cancel_event is not None and cancel_event.is_set():
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def evaluation_function(
         self, data: Dict[str, Any], exp_config: ExpConfig

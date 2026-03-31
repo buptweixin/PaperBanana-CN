@@ -48,6 +48,7 @@ def get_config_val(section, key, env_var, default=""):
 
 evolink_provider = None
 api88996_provider = None
+uniapi_provider = None
 ggboom_provider = None
 provider_clients: Dict[str, Any] = {}
 
@@ -55,6 +56,8 @@ evolink_api_key = get_config_val("evolink", "api_key", "EVOLINK_API_KEY", "")
 evolink_base_url = get_config_val("evolink", "base_url", "EVOLINK_BASE_URL", "https://api.evolink.ai")
 api88996_api_key = get_config_val("api88996", "api_key", "API88996_API_KEY", "")
 api88996_base_url = get_config_val("api88996", "base_url", "API88996_BASE_URL", "https://88996.cloud")
+uniapi_api_key = get_config_val("uniapi", "api_key", "UNIAPI_API_KEY", "")
+uniapi_base_url = get_config_val("uniapi", "base_url", "UNIAPI_BASE_URL", "https://api.uniapi.io")
 ggboom_api_key = get_config_val("ggboom", "api_key", "GGBOOM_API_KEY", "")
 ggboom_base_url = get_config_val("ggboom", "base_url", "GGBOOM_BASE_URL", "https://ai.qaq.al")
 
@@ -74,6 +77,14 @@ if api88996_api_key:
 else:
     print("警告：未配置 88996 API Key，88996 Provider 不可用。")
 
+if uniapi_api_key:
+    from providers.uniapi import UniapiProvider
+    uniapi_provider = UniapiProvider(api_key=uniapi_api_key, base_url=uniapi_base_url)
+    provider_clients["uniapi"] = uniapi_provider
+    print(f"已初始化 UniAPI Provider (base_url={uniapi_base_url})")
+else:
+    print("警告：未配置 UniAPI API Key，UniAPI Provider 不可用。")
+
 if ggboom_api_key:
     from providers.ggboom import GgboomProvider
     ggboom_provider = GgboomProvider(api_key=ggboom_api_key, base_url=ggboom_base_url)
@@ -89,7 +100,7 @@ def _get_provider_family(provider_name: str) -> str:
 
 def _register_provider_client(provider_name: str, provider: Any):
     """注册 provider 实例，并同步兼容旧的全局变量。"""
-    global evolink_provider, api88996_provider, ggboom_provider
+    global evolink_provider, api88996_provider, uniapi_provider, ggboom_provider
     provider_clients[provider_name] = provider
 
     provider_family = _get_provider_family(provider_name)
@@ -97,6 +108,8 @@ def _register_provider_client(provider_name: str, provider: Any):
         evolink_provider = provider
     elif provider_family == "88996":
         api88996_provider = provider
+    elif provider_family == "uniapi":
+        uniapi_provider = provider
     elif provider_family == "ggboom":
         ggboom_provider = provider
 
@@ -136,6 +149,18 @@ def init_api88996_provider(api_key: str, base_url: str = ""):
     print(f"已通过界面初始化 88996 Provider (base_url={url})")
 
 
+def init_uniapi_provider(api_key: str, base_url: str = ""):
+    """用指定的 API Key 初始化或更新 UniAPI Provider（供界面动态传入）。"""
+    global uniapi_provider
+    if not api_key:
+        return
+    url = base_url or uniapi_base_url
+    from providers.uniapi import UniapiProvider
+    uniapi_provider = UniapiProvider(api_key=api_key, base_url=url)
+    _register_provider_client("uniapi", uniapi_provider)
+    print(f"已通过界面初始化 UniAPI Provider (base_url={url})")
+
+
 def init_api88996_provider_for_slot(provider_name: str, api_key: str, base_url: str = ""):
     """为指定槽位初始化 88996 Provider。"""
     if not api_key:
@@ -145,6 +170,17 @@ def init_api88996_provider_for_slot(provider_name: str, api_key: str, base_url: 
     provider = Api88996Provider(api_key=api_key, base_url=url)
     _register_provider_client(provider_name, provider)
     print(f"已通过界面初始化 88996 Provider[{provider_name}] (base_url={url})")
+
+
+def init_uniapi_provider_for_slot(provider_name: str, api_key: str, base_url: str = ""):
+    """为指定槽位初始化 UniAPI Provider。"""
+    if not api_key:
+        return
+    url = base_url or uniapi_base_url
+    from providers.uniapi import UniapiProvider
+    provider = UniapiProvider(api_key=api_key, base_url=url)
+    _register_provider_client(provider_name, provider)
+    print(f"已通过界面初始化 UniAPI Provider[{provider_name}] (base_url={url})")
 
 
 def init_ggboom_provider(api_key: str, base_url: str = ""):
@@ -179,6 +215,8 @@ def init_provider_client(provider_name: str, api_key: str, base_url: str = ""):
         init_evolink_provider_for_slot(provider_name, api_key, base_url)
     elif provider_family == "88996":
         init_api88996_provider_for_slot(provider_name, api_key, base_url)
+    elif provider_family == "uniapi":
+        init_uniapi_provider_for_slot(provider_name, api_key, base_url)
     elif provider_family == "ggboom":
         init_ggboom_provider_for_slot(provider_name, api_key, base_url)
     elif provider_family == "gemini":
@@ -187,7 +225,7 @@ def init_provider_client(provider_name: str, api_key: str, base_url: str = ""):
 
 def is_openai_compatible_provider(provider_name: str) -> bool:
     """判断是否为项目内的 OpenAI 兼容 Provider。"""
-    return _get_provider_family(provider_name) in {"evolink", "88996", "ggboom"}
+    return _get_provider_family(provider_name) in {"evolink", "88996", "uniapi", "ggboom"}
 
 
 def get_openai_compatible_provider(provider_name: str):
@@ -197,6 +235,8 @@ def get_openai_compatible_provider(provider_name: str):
         return evolink_provider
     if provider_name == "88996":
         return api88996_provider
+    if provider_name == "uniapi":
+        return uniapi_provider
     if provider_name == "ggboom":
         return ggboom_provider
 
@@ -386,10 +426,10 @@ async def edit_openai_compatible_image_with_retry_async(
             error_context=error_context,
         )
 
-    if provider_family == "88996":
+    if provider_family in {"88996", "uniapi"}:
         provider = get_openai_compatible_provider(provider_name)
         if provider is None:
-            raise RuntimeError("88996 Provider 未初始化，请检查 API Key 配置。")
+            raise RuntimeError(f"{provider_family} Provider 未初始化，请检查 API Key 配置。")
         return await provider.edit_image(
             model_name=model_name,
             image_bytes=image_bytes,

@@ -6,6 +6,7 @@ from .base import BaseProvider
 from .api88996 import Api88996Provider
 from .evolink import EvolinkProvider
 from .ggboom import GgboomProvider
+from .uniapi import UniapiProvider
 
 
 def create_provider(provider_name: str, **kwargs) -> BaseProvider:
@@ -21,6 +22,7 @@ def create_provider(provider_name: str, **kwargs) -> BaseProvider:
     """
     providers = {
         "88996": Api88996Provider,
+        "uniapi": UniapiProvider,
         "evolink": EvolinkProvider,
         "ggboom": GgboomProvider,
     }

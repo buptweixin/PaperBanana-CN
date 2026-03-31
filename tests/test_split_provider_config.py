@@ -13,12 +13,12 @@ from utils.config import ExpConfig
 def test_config_defaults_split_providers_from_provider():
     cfg = ExpConfig(
         dataset_name="Demo",
-        provider="evolink",
+        provider="uniapi",
     )
 
-    assert cfg.provider == "evolink"
-    assert cfg.text_provider == "evolink"
-    assert cfg.image_provider == "evolink"
+    assert cfg.provider == "uniapi"
+    assert cfg.text_provider == "uniapi"
+    assert cfg.image_provider == "uniapi"
     assert cfg.text_api_mode == "chat_completions"
 
 

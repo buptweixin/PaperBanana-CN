@@ -21,6 +21,9 @@ import streamlit as st
 import asyncio
 import base64
 import json
+import queue
+import threading
+import time
 from io import BytesIO
 from PIL import Image
 from pathlib import Path
@@ -32,21 +35,17 @@ from copy import deepcopy
 # 将项目根目录添加到路径
 sys.path.insert(0, str(Path(__file__).parent))
 
-print("调试：正在导入代理模块...")
 try:
     from agents.planner_agent import PlannerAgent
-    print("调试：已导入 PlannerAgent")
     from agents.visualizer_agent import VisualizerAgent
     from agents.stylist_agent import StylistAgent
     from agents.critic_agent import CriticAgent
     from agents.retriever_agent import RetrieverAgent
     from agents.vanilla_agent import VanillaAgent
     from agents.polish_agent import PolishAgent
-    print("调试：已导入所有代理模块")
     from utils import config
     from utils.paperviz_processor import PaperVizProcessor
     from utils.result_store import dump_results_json, load_results_json
-    print("调试：已导入工具模块")
 
     import yaml
     config_path = Path(__file__).parent / "configs" / "model_config.yaml"
@@ -145,6 +144,7 @@ async def process_parallel_candidates(
     image_base_url="",
     checkpoint_path=None,
     progress_callback=None,
+    cancel_event=None,
 ):
     """使用 PaperVizProcessor 并行处理多个候选方案。"""
     print(f"\n{'='*60}")
@@ -225,6 +225,7 @@ async def process_parallel_candidates(
             max_concurrent=concurrent_num,
             do_eval=False,
             progress_callback=progress_callback,
+            cancel_event=cancel_event,
         ):
             results.append(result_data)
             if checkpoint_path:
@@ -400,6 +401,7 @@ STAGE_LABELS = {
     "visualizer": "可视化",
     "completed": "完成",
     "failed": "失败",
+    "cancelled": "已停止",
     "batch_progress": "批量进度",
 }
 
@@ -544,6 +546,116 @@ def build_progress_callback(progress_container, exp_mode):
 
     return callback
 
+
+def init_generation_controller():
+    """初始化生成任务控制器。"""
+    if "generation_controller" not in st.session_state:
+        st.session_state["generation_controller"] = {
+            "running": False,
+            "stop_requested": False,
+            "worker_thread": None,
+            "event_queue": queue.Queue(),
+            "cancel_event": threading.Event(),
+        }
+    return st.session_state["generation_controller"]
+
+
+def reset_generation_controller():
+    """重置生成任务控制器。"""
+    controller = init_generation_controller()
+    controller["running"] = False
+    controller["stop_requested"] = False
+    controller["worker_thread"] = None
+    controller["event_queue"] = queue.Queue()
+    controller["cancel_event"] = threading.Event()
+    return controller
+
+
+def enqueue_progress_event(event_queue, event):
+    """线程安全地发送进度事件。"""
+    event_queue.put(("progress", deepcopy(event)))
+
+
+def run_generation_worker(job_config, event_queue, cancel_event):
+    """后台线程：执行候选生成并把结果写回事件队列。"""
+    try:
+        results = asyncio.run(process_parallel_candidates(
+            **job_config,
+            progress_callback=lambda event: enqueue_progress_event(event_queue, event),
+            cancel_event=cancel_event,
+        ))
+        event_queue.put(("done", {"results": results, "cancelled": cancel_event.is_set()}))
+    except Exception as exc:
+        event_queue.put(("error", {"error": str(exc)}))
+
+
+def apply_generation_events():
+    """消费后台线程事件，更新会话状态。"""
+    controller = init_generation_controller()
+    event_queue = controller["event_queue"]
+    processed = False
+
+    while True:
+        try:
+            event_type, payload = event_queue.get_nowait()
+        except queue.Empty:
+            break
+
+        processed = True
+        if event_type == "progress":
+            live_state = st.session_state.setdefault("live_generation_state", {
+                "total": 0,
+                "completed": 0,
+                "candidate_states": {},
+                "recent_events": [],
+                "partial_results": {},
+            })
+            candidate_id = payload.get("candidate_id", "N/A")
+            stage = payload.get("stage", "")
+            status = payload.get("status", "running")
+            message = payload.get("message", "")
+            data = payload.get("data")
+
+            if payload.get("total") is not None:
+                live_state["total"] = payload["total"]
+            if payload.get("completed") is not None:
+                live_state["completed"] = payload["completed"]
+
+            if stage != "batch_progress":
+                live_state["candidate_states"][candidate_id] = {
+                    "stage": stage,
+                    "status": status,
+                    "message": message,
+                }
+
+            if data:
+                live_state["partial_results"][candidate_id] = deepcopy(data)
+
+            if stage != "batch_progress":
+                live_state["recent_events"].append({
+                    "candidate_id": candidate_id,
+                    "text": f"{STAGE_LABELS.get(stage, stage)} · {message or status}",
+                })
+                live_state["recent_events"] = live_state["recent_events"][-12:]
+
+        elif event_type == "done":
+            controller["running"] = False
+            st.session_state["results"] = payload.get("results", [])
+            st.session_state["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if payload.get("cancelled"):
+                st.session_state["generation_notice"] = "⏹️ 已停止生成任务，保留当前已完成的候选方案。"
+            else:
+                st.session_state["generation_notice"] = "✅ 候选方案生成完成。"
+        elif event_type == "error":
+            controller["running"] = False
+            st.session_state["generation_error"] = payload.get("error", "未知错误")
+
+    worker_thread = controller.get("worker_thread")
+    if worker_thread is not None and not worker_thread.is_alive() and controller["running"]:
+        controller["running"] = False
+
+    return processed
+
 def display_candidate_result(result, candidate_id, exp_mode):
     """展示单个候选方案的结果。"""
     task_name = "diagram"
@@ -646,6 +758,7 @@ def display_candidate_result(result, candidate_id, exp_mode):
 def main():
     st.title("🍌 PaperVizAgent 演示")
     st.markdown("AI 驱动的科学图表生成与精修")
+    apply_generation_events()
 
     # 创建选项卡
     tab1, tab2 = st.tabs(["📊 生成候选方案", "✨ 精修图像"])
@@ -720,14 +833,16 @@ def main():
             )
 
             # Provider 选择
-            _default_text_provider = get_config_val("defaults", "text_provider", "TEXT_PROVIDER", "evolink")
-            _default_image_provider = get_config_val("defaults", "image_provider", "IMAGE_PROVIDER", "evolink")
+            _default_text_provider = get_config_val("defaults", "text_provider", "TEXT_PROVIDER", "uniapi")
+            _default_image_provider = get_config_val("defaults", "image_provider", "IMAGE_PROVIDER", "uniapi")
             _default_text_api_mode = get_config_val("defaults", "text_api_mode", "TEXT_API_MODE", "chat_completions")
+            _default_model_name = get_config_val("defaults", "model_name", "MODEL_NAME", "gpt-5.4")
+            _default_image_model_name = get_config_val("defaults", "image_model_name", "IMAGE_MODEL_NAME", "gemini-3.1-flash-image-preview")
 
             text_provider = st.selectbox(
                 "文本 API Provider",
-                ["gemini", "evolink", "88996", "ggboom"],
-                index=["gemini", "evolink", "88996", "ggboom"].index(_default_text_provider) if _default_text_provider in ["gemini", "evolink", "88996", "ggboom"] else 1,
+                ["gemini", "uniapi", "evolink", "88996", "ggboom"],
+                index=["gemini", "uniapi", "evolink", "88996", "ggboom"].index(_default_text_provider) if _default_text_provider in ["gemini", "uniapi", "evolink", "88996", "ggboom"] else 1,
                 key="tab1_text_provider",
                 help="用于检索、规划、风格化、评审的文本/多模态模型 provider"
             )
@@ -742,8 +857,8 @@ def main():
 
             image_provider = st.selectbox(
                 "图像 API Provider",
-                ["gemini", "evolink", "88996"],
-                index=["gemini", "evolink", "88996"].index(_default_image_provider) if _default_image_provider in ["gemini", "evolink", "88996"] else 1,
+                ["gemini", "uniapi", "evolink", "88996"],
+                index=["gemini", "uniapi", "evolink", "88996"].index(_default_image_provider) if _default_image_provider in ["gemini", "uniapi", "evolink", "88996"] else 1,
                 key="tab1_image_provider",
                 help="用于图像生成与图像编辑的 provider"
             )
@@ -769,6 +884,16 @@ def main():
                     "base_url_default": get_config_val("api88996", "base_url", "API88996_BASE_URL", "https://88996.cloud"),
                     "model_name": "gpt-5-mini",
                     "image_model_name": "gpt-image-1",
+                },
+                "uniapi": {
+                    "api_key_label": "API Key",
+                    "api_key_help": "UniAPI API 密钥（Bearer Token）",
+                    "api_key_default": get_config_val("uniapi", "api_key", "UNIAPI_API_KEY", ""),
+                    "base_url_label": "Base URL",
+                    "base_url_help": "OpenAI 兼容接口根地址，例如 https://api.uniapi.io",
+                    "base_url_default": get_config_val("uniapi", "base_url", "UNIAPI_BASE_URL", "https://api.uniapi.io"),
+                    "model_name": "gpt-5.4",
+                    "image_model_name": "gemini-3.1-flash-image-preview",
                 },
                 "ggboom": {
                     "api_key_label": "API Key",
@@ -804,9 +929,9 @@ def main():
             if "tab1_image_base_url" not in st.session_state:
                 st.session_state["tab1_image_base_url"] = _image_pd["base_url_default"]
             if "tab1_model_name" not in st.session_state:
-                st.session_state["tab1_model_name"] = _text_pd["model_name"]
+                st.session_state["tab1_model_name"] = _default_model_name or _text_pd["model_name"]
             if "tab1_image_model_name" not in st.session_state:
-                st.session_state["tab1_image_model_name"] = _image_pd["image_model_name"]
+                st.session_state["tab1_image_model_name"] = _default_image_model_name or _image_pd["image_model_name"]
 
             # 检测 provider 切换，分别重置文本/图像模型与 API Key
             provider_switched = False
@@ -980,87 +1105,96 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                 help="要生成的图表的标题或描述。建议使用 Markdown 格式。"
             )
 
+        controller = init_generation_controller()
         live_progress_container = st.empty()
         if st.session_state.get("live_generation_state"):
             render_live_progress(live_progress_container, exp_mode)
 
+        if st.session_state.get("generation_notice"):
+            st.info(st.session_state.pop("generation_notice"))
+        if st.session_state.get("generation_error"):
+            st.error(f"处理过程中出错：{st.session_state.pop('generation_error')}")
+
         # 处理按钮
-        if st.button("🚀 生成候选方案", type="primary", use_container_width=True):
+        action_cols = st.columns(2)
+        start_clicked = action_cols[0].button(
+            "🚀 生成候选方案",
+            type="primary",
+            use_container_width=True,
+            disabled=controller["running"],
+        )
+        stop_clicked = action_cols[1].button(
+            "⏹️ 停止生成",
+            use_container_width=True,
+            disabled=not controller["running"],
+        )
+
+        if stop_clicked and controller["running"]:
+            controller["stop_requested"] = True
+            controller["cancel_event"].set()
+            st.warning("已发送停止请求，当前正在收尾已启动的任务。")
+
+        if start_clicked:
             if not method_content or not caption:
                 st.error("请同时提供方法内容和图注！")
             else:
-                # 保存到会话状态
                 st.session_state["method_content"] = method_content
                 st.session_state["caption"] = caption
+                st.session_state["results"] = []
+                st.session_state["exp_mode"] = exp_mode
 
-                with st.spinner(f"正在并行生成 {num_candidates} 个候选方案... 这可能需要几分钟。"):
-                    # 创建输入数据列表
-                    input_data_list = create_sample_inputs(
-                        method_content=method_content,
-                        caption=caption,
-                        aspect_ratio=aspect_ratio,
-                        num_copies=num_candidates,
-                        max_critic_rounds=max_critic_rounds
-                    )
+                input_data_list = create_sample_inputs(
+                    method_content=method_content,
+                    caption=caption,
+                    aspect_ratio=aspect_ratio,
+                    num_copies=num_candidates,
+                    max_critic_rounds=max_critic_rounds
+                )
 
-                    # 并行处理
-                    results_dir = Path(__file__).parent / "results" / "demo"
-                    results_dir.mkdir(parents=True, exist_ok=True)
-                    json_filename = results_dir / f"demo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-                    progress_callback = build_progress_callback(live_progress_container, exp_mode)
-                    st.session_state["results"] = []
+                results_dir = Path(__file__).parent / "results" / "demo"
+                results_dir.mkdir(parents=True, exist_ok=True)
+                json_filename = results_dir / f"demo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                st.session_state["json_file"] = str(json_filename)
 
-                    try:
-                        results = asyncio.run(process_parallel_candidates(
-                            input_data_list,
-                            exp_mode=exp_mode,
-                            retrieval_setting=retrieval_setting,
-                            model_name=model_name,
-                            image_model_name=image_model_name,
-                            text_provider=text_provider,
-                            image_provider=image_provider,
-                            text_api_mode=text_api_mode,
-                            text_api_key=text_api_key,
-                            image_api_key=image_api_key,
-                            text_base_url=text_base_url.strip(),
-                            image_base_url=image_base_url.strip(),
-                            checkpoint_path=json_filename,
-                            progress_callback=progress_callback,
-                        ))
-                        st.session_state["results"] = results
-                        st.session_state["exp_mode"] = exp_mode
-                        timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        st.session_state["timestamp"] = timestamp_str
-                        st.session_state["json_file"] = str(json_filename)
-                        live_state = st.session_state.get("live_generation_state", {})
-                        live_state["completed"] = len(results)
-                        live_state["total"] = len(results)
-                        render_live_progress(live_progress_container, exp_mode)
-                        failed_count = sum(1 for item in results if item.get("processing_status") == "failed")
-                        if failed_count > 0:
-                            st.warning(f"⚠️ 已生成 {len(results)} 个候选方案，其中 {failed_count} 个失败；中间结果已保存。")
-                        else:
-                            st.success(f"✅ 成功生成 {len(results)} 个候选方案！")
-                        st.info(f"💾 结果已保存至：`{json_filename.name}`")
-                    except Exception as e:
-                        partial_results = load_results_json(json_filename)
-                        if partial_results:
-                            st.session_state["results"] = partial_results
-                            st.session_state["exp_mode"] = exp_mode
-                            st.session_state["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            st.session_state["json_file"] = str(json_filename)
-                            live_state = st.session_state.get("live_generation_state", {})
-                            live_state["completed"] = len(partial_results)
-                            live_state["partial_results"] = {
-                                item.get("candidate_id", idx): item for idx, item in enumerate(partial_results)
-                            }
-                            render_live_progress(live_progress_container, exp_mode)
-                            st.warning(
-                                f"⚠️ 处理过程中出错，但已恢复 {len(partial_results)} 个中间结果。"
-                            )
-                        st.error(f"处理过程中出错：{e}")
-                        import traceback
-                        st.code(traceback.format_exc())
+                controller = reset_generation_controller()
+                controller["running"] = True
+                st.session_state["live_generation_state"] = {
+                    "total": len(input_data_list),
+                    "completed": 0,
+                    "candidate_states": {},
+                    "recent_events": [],
+                    "partial_results": {},
+                }
+
+                job_config = {
+                    "data_list": input_data_list,
+                    "exp_mode": exp_mode,
+                    "retrieval_setting": retrieval_setting,
+                    "model_name": model_name,
+                    "image_model_name": image_model_name,
+                    "text_provider": text_provider,
+                    "image_provider": image_provider,
+                    "text_api_mode": text_api_mode,
+                    "text_api_key": text_api_key,
+                    "image_api_key": image_api_key,
+                    "text_base_url": text_base_url.strip(),
+                    "image_base_url": image_base_url.strip(),
+                    "checkpoint_path": json_filename,
+                }
+                worker_thread = threading.Thread(
+                    target=run_generation_worker,
+                    args=(job_config, controller["event_queue"], controller["cancel_event"]),
+                    daemon=True,
+                )
+                controller["worker_thread"] = worker_thread
+                worker_thread.start()
+                st.info("任务已在后台启动，可随时点击“停止生成”。")
+                st.rerun()
+
+        if controller["running"]:
+            st.caption("后台生成中，页面会自动刷新；你也可以点击“停止生成”请求中断。")
+            time.sleep(1)
+            st.rerun()
 
         # 展示结果
         if "results" in st.session_state and st.session_state["results"]:
