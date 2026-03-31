@@ -27,6 +27,7 @@ from pathlib import Path
 import sys
 import os
 from datetime import datetime
+from copy import deepcopy
 
 # 将项目根目录添加到路径
 sys.path.insert(0, str(Path(__file__).parent))
@@ -143,6 +144,7 @@ async def process_parallel_candidates(
     text_base_url="",
     image_base_url="",
     checkpoint_path=None,
+    progress_callback=None,
 ):
     """使用 PaperVizProcessor 并行处理多个候选方案。"""
     print(f"\n{'='*60}")
@@ -219,7 +221,10 @@ async def process_parallel_candidates(
 
     try:
         async for result_data in processor.process_queries_batch(
-            data_list, max_concurrent=concurrent_num, do_eval=False
+            data_list,
+            max_concurrent=concurrent_num,
+            do_eval=False,
+            progress_callback=progress_callback,
         ):
             results.append(result_data)
             if checkpoint_path:
@@ -385,6 +390,159 @@ def get_evolution_stages(result, exp_mode):
             })
 
     return stages
+
+
+STAGE_LABELS = {
+    "queued": "已入队",
+    "retriever": "检索",
+    "planner": "规划",
+    "stylist": "风格化",
+    "visualizer": "可视化",
+    "completed": "完成",
+    "failed": "失败",
+    "batch_progress": "批量进度",
+}
+
+
+def get_final_preview(result, exp_mode):
+    """提取候选方案当前可展示的最终图和描述键。"""
+    task_name = "diagram"
+    final_image_key = None
+    final_desc_key = None
+
+    for round_idx in range(3, -1, -1):
+        image_key = f"target_{task_name}_critic_desc{round_idx}_base64_jpg"
+        if result.get(image_key):
+            final_image_key = image_key
+            final_desc_key = f"target_{task_name}_critic_desc{round_idx}"
+            return final_image_key, final_desc_key
+
+    if exp_mode == "demo_full":
+        if result.get(f"target_{task_name}_stylist_desc0_base64_jpg"):
+            return f"target_{task_name}_stylist_desc0_base64_jpg", f"target_{task_name}_stylist_desc0"
+
+    if result.get(f"target_{task_name}_desc0_base64_jpg"):
+        return f"target_{task_name}_desc0_base64_jpg", f"target_{task_name}_desc0"
+
+    return None, None
+
+
+def render_live_progress(progress_container, exp_mode):
+    """渲染实时处理进度面板。"""
+    state = st.session_state.get("live_generation_state", {})
+    total = max(1, state.get("total", 0))
+    completed = state.get("completed", 0)
+    candidate_states = state.get("candidate_states", {})
+    recent_events = state.get("recent_events", [])
+    partial_results = state.get("partial_results", {})
+
+    with progress_container.container():
+        st.markdown("## 🛰️ 实时进度")
+        st.progress(min(completed / total, 1.0), text=f"已完成 {completed} / {total} 个候选方案")
+
+        success_count = sum(1 for item in candidate_states.values() if item.get("status") == "success")
+        failed_count = sum(1 for item in candidate_states.values() if item.get("status") == "failed")
+        running_count = sum(1 for item in candidate_states.values() if item.get("status") == "running")
+
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("总数", total)
+        metric_cols[1].metric("处理中", running_count)
+        metric_cols[2].metric("成功", success_count)
+        metric_cols[3].metric("失败", failed_count)
+
+        st.markdown("### 📍 候选状态")
+        status_lines = []
+        for candidate_id in sorted(candidate_states):
+            item = candidate_states[candidate_id]
+            label = STAGE_LABELS.get(item.get("stage"), item.get("stage", "等待"))
+            status_text = item.get("status", "pending")
+            message = item.get("message", "")
+            status_lines.append(
+                f"- 候选 {candidate_id}: `{status_text}` · {label}"
+                + (f" · {message}" if message else "")
+            )
+        if status_lines:
+            st.markdown("\n".join(status_lines))
+        else:
+            st.info("任务尚未开始。")
+
+        event_col, preview_col = st.columns([1, 1.3])
+        with event_col:
+            st.markdown("### 🧾 最近事件")
+            if recent_events:
+                st.markdown("\n".join(
+                    f"- 候选 {item['candidate_id']}: {item['text']}"
+                    for item in recent_events[-8:]
+                ))
+            else:
+                st.caption("暂无事件。")
+
+        with preview_col:
+            st.markdown("### 🖼️ 中间结果预览")
+            if partial_results:
+                preview_candidates = sorted(partial_results.keys())[:2]
+                preview_cols = st.columns(len(preview_candidates))
+                for idx, candidate_id in enumerate(preview_candidates):
+                    result = partial_results[candidate_id]
+                    image_key, desc_key = get_final_preview(result, exp_mode)
+                    with preview_cols[idx]:
+                        st.caption(f"候选 {candidate_id}")
+                        if image_key:
+                            image = base64_to_image(result.get(image_key))
+                            if image:
+                                st.image(image, use_container_width=True)
+                        if desc_key and result.get(desc_key):
+                            st.caption(clean_text(result[desc_key][:140]) + ("..." if len(result[desc_key]) > 140 else ""))
+            else:
+                st.caption("处理中会在这里展示已返回的图像和描述。")
+
+
+def build_progress_callback(progress_container, exp_mode):
+    """构建供异步流水线调用的进度回调。"""
+    state = {
+        "total": 0,
+        "completed": 0,
+        "candidate_states": {},
+        "recent_events": [],
+        "partial_results": {},
+    }
+    st.session_state["live_generation_state"] = state
+
+    def callback(event):
+        live_state = st.session_state.setdefault("live_generation_state", state)
+        candidate_id = event.get("candidate_id", "N/A")
+        stage = event.get("stage", "")
+        status = event.get("status", "running")
+        message = event.get("message", "")
+        data = event.get("data")
+
+        if event.get("total") is not None:
+            live_state["total"] = event["total"]
+        if event.get("completed") is not None:
+            live_state["completed"] = event["completed"]
+
+        if stage != "batch_progress":
+            live_state["candidate_states"][candidate_id] = {
+                "stage": stage,
+                "status": status,
+                "message": message,
+            }
+
+        if data:
+            live_state["partial_results"][candidate_id] = deepcopy(data)
+
+        if stage not in {"batch_progress"}:
+            live_state["recent_events"].append(
+                {
+                    "candidate_id": candidate_id,
+                    "text": f"{STAGE_LABELS.get(stage, stage)} · {message or status}",
+                }
+            )
+            live_state["recent_events"] = live_state["recent_events"][-12:]
+
+        render_live_progress(progress_container, exp_mode)
+
+    return callback
 
 def display_candidate_result(result, candidate_id, exp_mode):
     """展示单个候选方案的结果。"""
@@ -822,6 +980,10 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                 help="要生成的图表的标题或描述。建议使用 Markdown 格式。"
             )
 
+        live_progress_container = st.empty()
+        if st.session_state.get("live_generation_state"):
+            render_live_progress(live_progress_container, exp_mode)
+
         # 处理按钮
         if st.button("🚀 生成候选方案", type="primary", use_container_width=True):
             if not method_content or not caption:
@@ -845,6 +1007,8 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                     results_dir = Path(__file__).parent / "results" / "demo"
                     results_dir.mkdir(parents=True, exist_ok=True)
                     json_filename = results_dir / f"demo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                    progress_callback = build_progress_callback(live_progress_container, exp_mode)
+                    st.session_state["results"] = []
 
                     try:
                         results = asyncio.run(process_parallel_candidates(
@@ -861,12 +1025,17 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                             text_base_url=text_base_url.strip(),
                             image_base_url=image_base_url.strip(),
                             checkpoint_path=json_filename,
+                            progress_callback=progress_callback,
                         ))
                         st.session_state["results"] = results
                         st.session_state["exp_mode"] = exp_mode
                         timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         st.session_state["timestamp"] = timestamp_str
                         st.session_state["json_file"] = str(json_filename)
+                        live_state = st.session_state.get("live_generation_state", {})
+                        live_state["completed"] = len(results)
+                        live_state["total"] = len(results)
+                        render_live_progress(live_progress_container, exp_mode)
                         failed_count = sum(1 for item in results if item.get("processing_status") == "failed")
                         if failed_count > 0:
                             st.warning(f"⚠️ 已生成 {len(results)} 个候选方案，其中 {failed_count} 个失败；中间结果已保存。")
@@ -880,6 +1049,12 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                             st.session_state["exp_mode"] = exp_mode
                             st.session_state["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             st.session_state["json_file"] = str(json_filename)
+                            live_state = st.session_state.get("live_generation_state", {})
+                            live_state["completed"] = len(partial_results)
+                            live_state["partial_results"] = {
+                                item.get("candidate_id", idx): item for idx, item in enumerate(partial_results)
+                            }
+                            render_live_progress(live_progress_container, exp_mode)
                             st.warning(
                                 f"⚠️ 处理过程中出错，但已恢复 {len(partial_results)} 个中间结果。"
                             )
